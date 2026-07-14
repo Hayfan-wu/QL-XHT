@@ -1,14 +1,13 @@
 # QL-XHT
 
-徐汇通 APP 自动签到 & 日常任务脚本，适用于青龙面板。
+徐汇通 APP 自动签到 & 日常任务脚本，适用于青龙面板。  
 QQ 机器人交互登录由 QL-Bot 通过 `bot_plugins/xht.py` 插件统一管理。
 
 ## 功能
 
 - 每日签到（自动获取积分）
-- 签到信息查询（连续签到天数、总积分）
+- 积分信息查询（连续签到天数、总积分、今日积分、任务进度）
 - 模拟浏览文章
-- 模拟分享
 - 多账号支持（Token 通过青龙面板环境变量 `XHT_TOKEN` 读取）
 - 多渠道推送通知（青龙内置、PushPlus、Server酱、Bark、Telegram）
 
@@ -57,7 +56,10 @@ nano .env
 QL_URL="http://127.0.0.1:5700"
 QL_CLIENT_ID="你的client_id"
 QL_CLIENT_SECRET="你的client_secret"
-XHT_BASE_URL="https://shrmtxh.shmedia.tech"
+
+# 徐汇通配置一般保持默认即可
+XHT_BASE_URL="https://app.xuhuimedia.cn/media-basic-port"
+XHT_SITE_ID="310104"
 ```
 
 ### 3. 青龙面板拉库
@@ -102,13 +104,30 @@ QL-Bot 启动时会自动扫描 `/opt/QL-XHT/bot_plugins/` 并加载 `xht.py`。
 
 ### 7. QQ 交互登录
 
-在 QQ 群里 @机器人 或私聊：
+#### 推荐方式：直接提交 Token
+
+由于徐汇通发送短信前需要**阿里云滑块验证**，QQ 机器人无法自动完成滑块。推荐通过抓包获取 token 后直绑：
+
+1. 在手机上打开徐汇通 APP 并登录
+2. 使用 HttpCanary、Stream 等抓包工具抓取任意接口的请求头
+3. 复制请求头中的 `token` 字段（JWT 格式，很长一串）
+4. 在 QQ 群里 @机器人 或私聊：
+
+```
+XHT登录 token eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzUxMiJ9...
+```
+
+机器人会校验 token 并保存到青龙面板 `XHT_TOKEN`。
+
+#### 备用方式：手机号验证码登录
+
+如果服务端临时关闭滑块验证，可尝试：
 
 ```
 XHT登录 13800138000
 ```
 
-机器人会发送验证码，回复验证码后即可登录，Token 自动写入青龙面板 `XHT_TOKEN`。
+机器人发送验证码后，回复验证码即可完成登录。若提示滑块验证，请改用「直接提交 Token」方式。
 
 ### 8. 创建青龙定时任务
 
@@ -126,7 +145,8 @@ XHT登录 13800138000
 
 | 命令 | 说明 |
 |------|------|
-| `XHT登录 13800138000` | 手机号验证码登录 |
+| `XHT登录 [手机号]` | 尝试手机号验证码登录（受滑块限制） |
+| `XHT登录 token [JWT]` | 直接提交抓包获取的 token（推荐） |
 | `XHT查询` | 查询已登录账号状态 |
 | `XHT执行` | 立即执行签到脚本 |
 | `XHT管理` | 查看已登录账号 |
@@ -142,14 +162,14 @@ XHT登录 13800138000
 | `QL_URL` | 是 | `http://127.0.0.1:5700` | 青龙面板地址 |
 | `QL_CLIENT_ID` | 是 | - | 青龙 Open API Client ID |
 | `QL_CLIENT_SECRET` | 是 | - | 青龙 Open API Client Secret |
-| `XHT_BASE_URL` | 否 | `https://shrmtxh.shmedia.tech` | 徐汇通 API 地址 |
+| `XHT_BASE_URL` | 否 | `https://app.xuhuimedia.cn/media-basic-port` | 徐汇通 API 地址 |
+| `XHT_DEVICE_ID` | 否 | 自动生成 | 32位设备标识 |
+| `XHT_SITE_ID` | 否 | `310104` | 站点 ID |
 | `XHT_NOTIFY` | 否 | 青龙内置 | 通知渠道 |
 | `XHT_TIMEOUT` | 否 | `15` | 请求超时（秒） |
 | `XHT_RETRY_COUNT` | 否 | `3` | 失败重试次数 |
 | `XHT_BROWSE_ARTICLE` | 否 | `true` | 是否浏览文章 |
 | `XHT_BROWSE_COUNT` | 否 | `5` | 浏览文章数量 |
-| `XHT_SHARE` | 否 | `true` | 是否执行分享 |
-| `XHT_SHARE_COUNT` | 否 | `1` | 分享次数 |
 
 ### 青龙面板环境变量
 
@@ -170,3 +190,16 @@ QL-XHT/
 ├── .gitignore
 └── README.md
 ```
+
+## 已知限制
+
+1. **阿里云滑块验证码**：徐汇通在发送短信前要求完成阿里云滑块验证，机器人环境无法自动完成。因此推荐直接提交已抓取的 JWT token。
+2. **阅读积分**：当前抓包未捕获到明确的文章阅读上报接口，脚本通过调用新闻列表接口模拟浏览。如需稳定获取阅读积分，可能需要进一步抓包分析详情页/分享/点赞等接口。
+
+## 接口来源
+
+本项目接口基于真实 APP 抓包分析：
+
+- 业务域名：`https://app.xuhuimedia.cn/media-basic-port`
+- 登录短信/滑块域名：`https://xhweb.shmedia.tech/media-basic-port`
+- 认证方式：HTTP Header `token`（JWT）
