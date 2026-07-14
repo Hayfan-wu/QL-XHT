@@ -1,24 +1,26 @@
 # -*- coding: utf-8 -*-
-"""徐汇通 (XHT) QQ 机器人控制插件
+"""
+徐汇通 (XHT) QQ 机器人控制插件
 
 由 QL-Bot 自动扫描 /opt/QL-XHT/bot_plugins/ 加载。
 负责交互登录、Token 管理、查询状态、触发执行。
 
-登录流程说明：
-  1. 徐汇通发送短信前需要先通过阿里云滑块验证（/api/app/json/captcha 返回 open_flag=true）。
-  2. 滑块验证在 QQ 机器人环境无法自动完成，因此本插件提供两种登录方式：
-     a) XHT登录 token [jwt_token]   # 推荐：用户手动抓包获取 token 后直接提交
-     b) XHT登录 [手机号]            # 尝试自动发短信，若服务端要求滑块则提示用户
+登录方式：
+  1. JWT Token 直绑（推荐，最稳定）
+  2. 短信验证码登录（依赖浏览器自动过滑块或第三方打码平台，实验性）
+
+短信登录说明：
+  徐汇通发送短信前需要阿里云拼图/滑块验证。QQ 机器人纯后端环境无法自动完成，
+  因此提供两种短信登录实现：
+  - auto: 浏览器 + OpenCV 自动识别缺口（成功率有限，免费）
+  - 2captcha / chaojiying: 第三方打码平台识别（付费，更稳定）
 """
 
 import os
 import re
 import sys
-import time
-import uuid
 import requests
 
-# 兼容 QL-Bot 的导入路径
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from bot.plugins.base import Plugin
@@ -26,118 +28,8 @@ from bot.project_env import ProjectEnv
 from bot.ql_api import QingLongAPI
 from bot.session import sessions
 
-
-class XHTAPI:
-    """徐汇通登录相关 API（基于真实抓包）"""
-
-    # 业务域名（用户信息、签到、登录）
-    BASE_APP_URL = "https://app.xuhuimedia.cn/media-basic-port"
-    # 滑块验证 / 短信发送域名（H5 页面）
-    BASE_WEB_URL = "https://xhweb.shmedia.tech/media-basic-port"
-
-    def __init__(self, device_id: str = "", site_id: str = "310104"):
-        self.site_id = site_id
-        self.device_id = device_id or self._generate_device_id()
-        self.session = requests.Session()
-        self.session.headers.update({
-            "User-Agent": "xu hui tong/2.5.0 (iPhone; iOS 26.5; Scale/3.00)",
-            "Content-Type": "application/json; charset=utf-8",
-            "Accept": "*/*",
-            "Accept-Language": "zh-Hans-CN;q=1, zh-Hant-HK;q=0.9",
-            "Accept-Encoding": "gzip, deflate, br",
-            "Connection": "keep-alive",
-            "deviceId": self.device_id,
-            "siteId": self.site_id,
-        })
-
-    @staticmethod
-    def _generate_device_id() -> str:
-        return uuid.uuid4().hex.replace("-", "")[:32]
-
-    def _request(self, method, url, json_body=None, headers=None, timeout=15):
-        h = dict(self.session.headers)
-        if headers:
-            h.update(headers)
-        try:
-            kwargs = {"headers": h, "timeout": timeout}
-            if json_body is not None:
-                kwargs["json"] = json_body
-            resp = self.session.request(method, url, **kwargs)
-            if resp.status_code == 200:
-                try:
-                    return resp.json(), dict(resp.headers)
-                except ValueError:
-                    return {"code": -1, "msg": f"响应非JSON: {resp.text[:200]}"}, dict(resp.headers)
-            return {"code": -1, "msg": f"HTTP {resp.status_code}"}, dict(resp.headers)
-        except Exception as e:
-            return {"code": -1, "msg": str(e)}, {}
-
-    def check_captcha_open(self) -> bool:
-        """检查是否开启滑块验证"""
-        url = f"{self.BASE_APP_URL}/api/app/json/captcha"
-        data, _ = self._request("POST", url, json_body={})
-        if data.get("code") == 0:
-            return data.get("data", {}).get("open_flag", False)
-        return True  # 默认认为开启，避免误发
-
-    def send_sms(self, phone: str, captcha_verify_param: str = ""):
-        """
-        发送短信验证码。
-        由于需要阿里云滑块参数，QQ 机器人通常无法自动完成。
-        """
-        url = f"{self.BASE_WEB_URL}/api/app/auth/captcha/validate/send_sms_code"
-        # 不带滑块参数时尝试调用，服务端会返回具体错误
-        body = {"sceneType": "app", "mobile": phone}
-        if captcha_verify_param:
-            body["captchaVerifyParam"] = captcha_verify_param
-
-        headers = {
-            # H5 页面使用的 UA
-            "User-Agent": (
-                "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) "
-                "AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148Rmt/XuHui; Version/2.5.0"
-            ),
-            "Content-Type": "application/json",
-            "Origin": "https://xhweb.shmedia.tech",
-            "Referer": f"https://xhweb.shmedia.tech/h5/xh/aliCaptchaVerify/?siteId={self.site_id}",
-        }
-        data, _ = self._request("POST", url, json_body=body, headers=headers)
-        if data.get("code") == 0:
-            form_token = data.get("data", {}).get("formToken", "")
-            return True, "验证码已发送", form_token
-        return False, data.get("msg", "发送验证码失败"), ""
-
-    def login(self, phone: str, validate_code: str, form_token: str):
-        """手机号 + 短信验证码 + formToken 登录"""
-        url = f"{self.BASE_APP_URL}/api/app/auth/validate_code_login"
-        body = {
-            "formToken": form_token,
-            "mobile": phone,
-            "validateCode": validate_code,
-        }
-        data, resp_headers = self._request("POST", url, json_body=body)
-        if data.get("code") == 0:
-            token = resp_headers.get("token", "")
-            account = data.get("data", {}).get("account", {})
-            nickname = account.get("nickname", "")
-            if token:
-                return True, token, nickname
-            return False, "登录成功但未获取到 Token", ""
-        return False, data.get("msg", "登录失败"), ""
-
-    def query_user(self, token: str):
-        """查询用户信息，用于校验 Token 有效性"""
-        url = f"{self.BASE_APP_URL}/api/app/personal/get"
-        headers = {"token": token}
-        data, _ = self._request("POST", url, json_body={}, headers=headers)
-        if data.get("code") == 0:
-            user = data.get("data", {})
-            return True, {
-                "nickname": user.get("nickname", ""),
-                "mobile": user.get("mobile", ""),
-                "score": user.get("score", 0),
-            }
-        return False, data.get("msg", "查询失败")
+# 导入项目内登录辅助模块
+from xht_login_helper import XHTLoginFlow
 
 
 class XHTPlugin(Plugin):
@@ -154,10 +46,9 @@ class XHTPlugin(Plugin):
     def __init__(self):
         self.env = None
         self.ql = None
-        self.api = None
+        self.flow = None
 
     def _init(self):
-        """初始化项目环境"""
         if self.env is None:
             self.env = ProjectEnv(self.project_dir)
         if self.ql is None:
@@ -166,10 +57,8 @@ class XHTPlugin(Plugin):
                 client_id=self.env.get("QL_CLIENT_ID", ""),
                 client_secret=self.env.get("QL_CLIENT_SECRET", ""),
             )
-        if self.api is None:
-            device_id = self.env.get("XHT_DEVICE_ID", "")
-            site_id = self.env.get("XHT_SITE_ID", "310104")
-            self.api = XHTAPI(device_id=device_id, site_id=site_id)
+        if self.flow is None:
+            self.flow = XHTLoginFlow()
 
     def _get_tokens(self):
         """从青龙面板读取 XHT_TOKEN"""
@@ -180,25 +69,6 @@ class XHTPlugin(Plugin):
                 value = env.get("value", "")
                 return [t.strip() for t in value.split("&") if t.strip()], env
         return [], None
-
-    def _set_token(self, token: str, remarks=""):
-        """保存 Token 到青龙面板（追加到已有账号）"""
-        self._init()
-        tokens, env = self._get_tokens()
-        if token in tokens:
-            return True, "该账号已存在"
-
-        new_tokens = tokens + [token]
-        new_value = "&".join(new_tokens)
-
-        try:
-            if env:
-                self.ql.update_env(env["id"], "XHT_TOKEN", new_value, remarks=remarks)
-            else:
-                self.ql.create_env("XHT_TOKEN", new_value, remarks=remarks)
-            return True, "Token 已保存"
-        except Exception as e:
-            return False, f"保存 Token 失败: {e}"
 
     def _remove_token_by_index(self, idx: int):
         """移除指定序号的 Token"""
@@ -225,49 +95,48 @@ class XHTPlugin(Plugin):
         if re.search(r"^XHT\s*帮助", text, re.IGNORECASE) or text.lower() == "xht帮助":
             return (
                 "=== 徐汇通 (XHT) 命令 ===\n"
-                "XHT登录 [手机号] - 尝试手机号验证码登录（受滑块验证限制）\n"
-                "XHT登录 token [JWT Token] - 直接提交抓包获取的 Token（推荐）\n"
+                "XHT登录 token [JWT] - 直接提交抓包 Token（推荐）\n"
+                "XHT登录 [手机号] - 短信验证码登录（实验性，需配置滑块求解器）\n"
                 "XHT查询 - 查询已登录账号状态\n"
                 "XHT执行 - 立即执行签到脚本\n"
                 "XHT管理 - 查看/删除已登录账号\n"
                 "XHT帮助 - 显示本帮助\n\n"
-                "说明：因徐汇通发送短信需要阿里云滑块验证，机器人无法自动完成。\n"
-                "推荐在 APP 中登录后使用 HttpCanary/Stream 等工具抓取 token，\n"
-                "然后发送「XHT登录 token [你的token]」完成绑定。"
+                "说明：\n"
+                "1. Token 直绑最稳定，APP 抓包后发送「XHT登录 token eyJ...」即可。\n"
+                "2. 短信登录需在 .env 配置 XHT_CAPTCHA_SOLVER（auto/2captcha/chaojiying），\n"
+                "   并安装对应依赖（详见 README）。"
             )
 
         # XHT登录 token [jwt]
         match = re.search(r"^XHT\s*登录\s+token\s+(\S+)", text, re.IGNORECASE)
         if match:
             token = match.group(1).strip()
-            ok, info = self.api.query_user(token)
-            if not ok:
-                return f"Token 校验失败：{info}\n请确认 token 是否正确且未过期。"
-            save_ok, save_msg = self._set_token(token, remarks=f"手机号 {info.get('mobile', '')}")
-            if save_ok:
+            ok, msg, info = self.flow.login_by_token(token)
+            if ok:
                 return (
                     f"Token 绑定成功！\n"
                     f"用户：{info.get('nickname', '-')}\n"
                     f"手机号：{info.get('mobile', '-')}\n"
                     f"当前积分：{info.get('score', 0)}\n"
-                    f"{save_msg}"
+                    f"{msg}"
                 )
-            return f"保存失败：{save_msg}"
+            return f"绑定失败：{msg}"
 
         # XHT登录 [手机号]
         match = re.search(r"^XHT\s*登录\s*(\d{11})\s*$", text, re.IGNORECASE)
         if match:
             phone = match.group(1)
-            # 先检查滑块开关
-            if self.api.check_captcha_open():
+            solver = self.env.get("XHT_CAPTCHA_SOLVER", "auto").lower() or "auto"
+            if solver not in ("auto", "2captcha", "chaojiying"):
                 return (
-                    "当前服务端开启了滑块验证，机器人无法自动完成。\n"
-                    "请使用以下方式登录：\n"
-                    "1. 在 APP 中手动完成登录\n"
-                    "2. 使用抓包工具获取请求头中的 token（JWT 字符串）\n"
-                    f"3. 发送：XHT登录 token [你的token]"
+                    "未配置有效的滑块求解器。请在 /opt/QL-XHT/.env 中设置：\n"
+                    "XHT_CAPTCHA_SOLVER=auto       # 浏览器+OpenCV（免费，成功率有限）\n"
+                    "XHT_CAPTCHA_SOLVER=2captcha   # 第三方打码（付费，更稳定）\n"
+                    "或直接使用：XHT登录 token [你的JWT]"
                 )
-            ok, msg, form_token = self.api.send_sms(phone)
+
+            # 短信登录第一步：发送验证码
+            ok, msg, form_token = self.flow.login_by_sms(phone, solver_type=solver)
             if ok and form_token:
                 sessions.set(sender_id, group_id, "xht", {
                     "phone": phone,
@@ -275,8 +144,8 @@ class XHTPlugin(Plugin):
                     "step": "captcha",
                     "project_dir": self.project_dir,
                 })
-                return f"验证码已发送至 {phone}，请回复验证码（4-6位数字）"
-            return f"发送验证码失败：{msg}\n建议直接使用「XHT登录 token [你的token]」"
+                return f"验证码已发送至 {phone}，请回复 6 位验证码。\n（如需取消请回复「取消」）"
+            return f"发送验证码失败：{msg}\n建议改用「XHT登录 token [你的JWT]」"
 
         # XHT查询
         if re.search(r"^XHT\s*查询", text, re.IGNORECASE):
@@ -285,7 +154,7 @@ class XHTPlugin(Plugin):
                 return "暂无已登录的徐汇通账号"
             lines = ["=== 徐汇通账号状态 ==="]
             for i, token in enumerate(tokens, 1):
-                ok, info = self.api.query_user(token)
+                ok, info = self.flow.api.query_user(token)
                 if ok:
                     lines.append(
                         f"{i}. {info['nickname']} | 手机号：{info['mobile']} | 积分：{info['score']}"
@@ -324,21 +193,18 @@ class XHTPlugin(Plugin):
         self._init()
         script_path = self.env.get("XHT_SCRIPT_PATH", os.path.join(self.project_dir, "xht.py"))
         try:
-            # 优先尝试通过青龙 API 运行定时任务
             task_name = os.path.basename(os.path.dirname(script_path))
             tasks = self._get_ql_tasks()
             for task in tasks:
                 if task_name in task.get("command", ""):
                     self._run_ql_task(task["id"])
                     return f"已触发执行：{task.get('name', task_name)}"
-            # 退化为本地执行
             os.system(f"cd {self.project_dir} && python3 {script_path}")
             return "已触发本地执行 xht.py"
         except Exception as e:
             return f"执行失败：{e}"
 
     def _get_ql_tasks(self):
-        """获取青龙定时任务列表"""
         try:
             url = f"{self.ql.base_url}/open/crons"
             r = requests.get(url, headers=self.ql._headers(), params={"searchValue": "XHT"}, timeout=10)
@@ -350,7 +216,6 @@ class XHTPlugin(Plugin):
         return []
 
     def _run_ql_task(self, task_id):
-        """运行指定青龙任务"""
         url = f"{self.ql.base_url}/open/crons/run"
         requests.put(url, headers=self.ql._headers(), json=[task_id], timeout=10)
 
@@ -376,12 +241,12 @@ def register_session_handlers(handlers):
             sessions.clear(sender_id, group_id)
             return "已取消登录"
 
-        if not text.isdigit() or not (4 <= len(text) <= 8):
-            return "请输入正确的验证码（4-6位数字），或回复「取消」"
+        if not text.isdigit() or len(text) != 6:
+            return "请输入 6 位数字验证码，或回复「取消」"
 
-        ok, token, nickname = plugin.api.login(phone, text, form_token)
+        ok, token, nickname = plugin.flow.api.login(phone, text, form_token)
         if ok:
-            save_ok, save_msg = plugin._set_token(token, remarks=f"手机号 {phone}")
+            save_ok, save_msg = plugin.flow.save_token(token, remarks=f"手机号 {phone}")
             sessions.clear(sender_id, group_id)
             return (
                 f"登录成功！\n"
@@ -391,9 +256,6 @@ def register_session_handlers(handlers):
             )
         else:
             sessions.clear(sender_id, group_id)
-            return (
-                f"登录失败：{token}\n"
-                "建议直接使用「XHT登录 token [你的token]」绑定。"
-            )
+            return f"登录失败：{token}"
 
     handlers["xht"] = xht_session_handler
