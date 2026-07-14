@@ -323,8 +323,31 @@ class ThirdPartySolver(CaptchaSolver):
             raise RuntimeError(f"不支持的 solver: {CAPTCHA_SOLVER}")
 
         # 拿到识别距离后统一拖动并等待 captcha 回调
+        logger.info(f"识别距离: {distance:.1f}px, 准备拖动滑块")
+        box = page.locator("#aliyunCaptcha-sliding-slider").first.bounding_box()
+        logger.info(f"滑块位置: x={box['x']}, y={box['y']}, w={box['width']}, h={box['height']}")
+        bg_box = page.locator("#aliyunCaptcha-img").first.bounding_box()
+        logger.info(f"背景图位置: x={bg_box['x']}, y={bg_box['y']}, w={bg_box['width']}")
+
+        # 限制拖动距离不超过滑轨范围
+        max_drag = bg_box["width"] - box["width"]
+        if distance > max_drag:
+            logger.warning(f"距离 {distance:.1f} 超过最大拖动 {max_drag:.1f}，已截断")
+            distance = max_drag
+
         self._human_drag(page, "#aliyunCaptcha-sliding-slider", distance)
-        return self._wait_for_captcha(page)
+        logger.info("拖动完成，等待 captcha 回调...")
+        result = self._wait_for_captcha(page)
+        if result:
+            logger.info(f"验证通过，captchaVerifyParam 长度: {len(result)}")
+        else:
+            # 截图保存用于调试
+            try:
+                page.screenshot(path="/tmp/xht_captcha_fail.png")
+                logger.warning("滑块验证未通过，截图已保存到 /tmp/xht_captcha_fail.png")
+            except Exception:
+                pass
+        return result
 
     def _img_b64_from_page(self, page, selector):
         """从页面元素 src 获取 base64，支持 data URI 或 URL"""
