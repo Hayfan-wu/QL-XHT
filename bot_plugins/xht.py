@@ -146,7 +146,27 @@ class XHTPlugin(Plugin):
                     except FuturesTimeoutError:
                         return "验证码发送超时（90秒），请稍后重试"
             except Exception as e:
-                return f"发送验证码异常：{e}\n建议改用「XHT登录 token [你的JWT]」"
+                err_msg = str(e)
+                hint = (
+                    f"当前 solver: {solver}\n"
+                    f"异常：{err_msg}\n\n"
+                )
+                if solver == "auto":
+                    hint += (
+                        "提示：auto 模式需要安装 OpenCV。\n"
+                        "  pip install opencv-python-headless\n\n"
+                        "推荐改用云码（jfbym）：在 /opt/QL-XHT/.env 中添加\n"
+                        "  XHT_CAPTCHA_SOLVER=jfbym\n"
+                        "  XHT_CAPTCHA_API_KEY=你的云码token\n\n"
+                    )
+                elif solver == "jfbym":
+                    hint += (
+                        "提示：请检查 /opt/QL-XHT/.env 中 XHT_CAPTCHA_API_KEY 是否正确配置。\n"
+                        "或直接使用：XHT登录 token [你的JWT]"
+                    )
+                else:
+                    hint += "建议改用「XHT登录 token [你的JWT]」"
+                return hint
 
             if ok and form_token:
                 sessions.set(sender_id, group_id, "xht", {

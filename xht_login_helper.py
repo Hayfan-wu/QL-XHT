@@ -52,6 +52,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger("XHT_LOGIN")
 
+# 可选依赖：OpenCV（仅在 auto solver 时需要）
+try:
+    import cv2
+    import numpy as np
+    _CV2_AVAILABLE = True
+except ImportError:
+    cv2 = None
+    np = None
+    _CV2_AVAILABLE = False
+
 # 配置
 XHT_BASE_URL = os.environ.get("XHT_BASE_URL", "https://app.xuhuimedia.cn/media-basic-port").rstrip("/")
 XHT_CAPTCHA_WEB = "https://xhweb.shmedia.tech/media-basic-port"
@@ -215,16 +225,42 @@ class CaptchaSolver:
         """返回 captchaVerifyParam 字符串，失败返回 None"""
         raise NotImplementedError
 
+    def _human_drag(self, page, selector, distance, duration=1.0):
+        """模拟人类拖动滑块"""
+        box = page.locator(selector).first.bounding_box()
+        start_x = box["x"] + box["width"] / 2
+        start_y = box["y"] + box["height"] / 2
+        steps = int(duration * 80)
+        page.mouse.move(start_x, start_y)
+        page.mouse.down()
+        for i in range(steps + 1):
+            t = i / steps
+            t2 = 2 * t * t if t < 0.5 else 1 - pow(-2 * t + 2, 2) / 2
+            page.mouse.move(
+                start_x + distance * t2 + random.uniform(-1, 1),
+                start_y + random.uniform(-2, 2) * (1 - t)
+            )
+            time.sleep(duration / steps)
+        page.mouse.up()
+
+    def _wait_for_captcha(self, page, timeout=10):
+        """等待滑块验证完成并返回 captchaVerifyParam"""
+        for _ in range(int(timeout * 2)):
+            if page.evaluate("window._xht_captcha_done"):
+                return page.evaluate("window._xht_captcha_param")
+            time.sleep(0.5)
+        return None
+
 
 class BrowserAutoSolver(CaptchaSolver):
     """浏览器内自动识别拼图缺口并拖动（实验性）"""
 
     def solve(self, page):
-        try:
-            import cv2
-            import numpy as np
-        except ImportError:
-            raise RuntimeError("使用浏览器自动识别需要安装 opencv-python-headless: pip install opencv-python-headless")
+        if not _CV2_AVAILABLE:
+            raise RuntimeError(
+                "使用浏览器自动识别需要安装 opencv-python-headless:\n"
+                "  pip install opencv-python-headless"
+            )
 
         page.wait_for_selector("#aliyunCaptcha-img", timeout=15000)
         time.sleep(2)
@@ -241,11 +277,7 @@ class BrowserAutoSolver(CaptchaSolver):
         drag_distance = max(0, min(gap_x * scale, 250))
         self._human_drag(page, "#aliyunCaptcha-sliding-slider", drag_distance)
 
-        for _ in range(10):
-            if page.evaluate("window._xht_captcha_done"):
-                return page.evaluate("window._xht_captcha_param")
-            time.sleep(0.5)
-        return None
+        return self._wait_for_captcha(page)
 
     def _img_from_url(self, url):
         if url.startswith("data:image"):
@@ -255,8 +287,6 @@ class BrowserAutoSolver(CaptchaSolver):
         return cv2.imdecode(np.frombuffer(r.content, np.uint8), cv2.IMREAD_COLOR)
 
     def _find_gap(self, bg, puzzle):
-        import cv2
-        import numpy as np
         bg_gray = cv2.cvtColor(bg, cv2.COLOR_BGR2GRAY)
         puzzle_gray = cv2.cvtColor(puzzle, cv2.COLOR_BGR2GRAY)
         _, mask = cv2.threshold(puzzle_gray, 200, 255, cv2.THRESH_BINARY)
@@ -269,28 +299,11 @@ class BrowserAutoSolver(CaptchaSolver):
         h, w = mask.shape
         best_x, max_score = 0, -1
         for x in range(0, edges.shape[1] - w):
-            score = np.sum(edges[:, x:x+w] * mask)
+            score = np.sum(edges[:, x:x + w] * mask)
             if score > max_score:
                 max_score = score
                 best_x = x
         return best_x
-
-    def _human_drag(self, page, selector, distance, duration=1.0):
-        box = page.locator(selector).first.bounding_box()
-        start_x = box["x"] + box["width"] / 2
-        start_y = box["y"] + box["height"] / 2
-        steps = int(duration * 80)
-        page.mouse.move(start_x, start_y)
-        page.mouse.down()
-        for i in range(steps + 1):
-            t = i / steps
-            t2 = 2*t*t if t < 0.5 else 1 - pow(-2*t+2, 2)/2
-            page.mouse.move(
-                start_x + distance * t2 + random.uniform(-1, 1),
-                start_y + random.uniform(-2, 2) * (1-t)
-            )
-            time.sleep(duration / steps)
-        page.mouse.up()
 
 
 class ThirdPartySolver(CaptchaSolver):
@@ -301,20 +314,17 @@ class ThirdPartySolver(CaptchaSolver):
             raise RuntimeError("未配置 XHT_CAPTCHA_API_KEY")
 
         if CAPTCHA_SOLVER == "jfbym":
-            return self._solve_jfbym(page)
-
-        # 2captcha / chaojiying 使用整张截图
-        element = page.locator(".aliyunCaptcha-body").first
-        if element.count() == 0:
-            element = page.locator("#aliyunCaptcha-img").first
-        screenshot = element.screenshot()
-        b64 = base64.b64encode(screenshot).decode()
-
-        if CAPTCHA_SOLVER == "2captcha":
-            return self._solve_2captcha(b64, element)
+            distance = self._solve_jfbym(page)
+        elif CAPTCHA_SOLVER == "2captcha":
+            distance = self._solve_2captcha(page)
         elif CAPTCHA_SOLVER == "chaojiying":
-            return self._solve_chaojiying(b64, element)
-        raise RuntimeError(f"不支持的 solver: {CAPTCHA_SOLVER}")
+            distance = self._solve_chaojiying(page)
+        else:
+            raise RuntimeError(f"不支持的 solver: {CAPTCHA_SOLVER}")
+
+        # 拿到识别距离后统一拖动并等待 captcha 回调
+        self._human_drag(page, "#aliyunCaptcha-sliding-slider", distance)
+        return self._wait_for_captcha(page)
 
     def _img_b64_from_page(self, page, selector):
         """从页面元素 src 获取 base64，支持 data URI 或 URL"""
@@ -359,12 +369,17 @@ class ThirdPartySolver(CaptchaSolver):
             raise RuntimeError(f"云码返回距离异常: {distance}")
 
         # 云码返回的是图片像素距离，需要按页面显示宽度缩放
-        # 页面中验证码显示宽度约 300px
         box = page.locator("#aliyunCaptcha-img").first.bounding_box()
         scale = box["width"] / 300 if box else 1.0
         return distance * scale
 
-    def _solve_2captcha(self, b64, element):
+    def _solve_2captcha(self, page):
+        element = page.locator(".aliyunCaptcha-body").first
+        if element.count() == 0:
+            element = page.locator("#aliyunCaptcha-img").first
+        screenshot = element.screenshot()
+        b64 = base64.b64encode(screenshot).decode()
+
         url = "http://2captcha.com/in.php"
         data = {
             "key": CAPTCHA_API_KEY,
@@ -394,8 +409,13 @@ class ThirdPartySolver(CaptchaSolver):
                 raise RuntimeError(f"2Captcha 错误: {res}")
         raise RuntimeError("2Captcha 超时")
 
-    def _solve_chaojiying(self, b64, element):
-        # 超级鹰 API 示例，需按实际文档调整
+    def _solve_chaojiying(self, page):
+        element = page.locator(".aliyunCaptcha-body").first
+        if element.count() == 0:
+            element = page.locator("#aliyunCaptcha-img").first
+        screenshot = element.screenshot()
+        b64 = base64.b64encode(screenshot).decode()
+
         url = "http://upload.chaojiying.net/Upload/Processing.php"
         files = {"userfile": ("captcha.png", base64.b64decode(b64), "image/png")}
         data = {
@@ -407,7 +427,6 @@ class ThirdPartySolver(CaptchaSolver):
         r = requests.post(url, files=files, data=data, timeout=30).json()
         if r.get("err_str") == "OK":
             pic_str = r.get("pic_str", "")
-            # pic_str 格式如 "x,y"
             gap_x = int(pic_str.split(",")[0])
             box = element.bounding_box()
             scale = box["width"] / 300
