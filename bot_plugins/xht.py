@@ -20,6 +20,7 @@ import os
 import re
 import sys
 import requests
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -127,17 +128,26 @@ class XHTPlugin(Plugin):
         if match:
             phone = match.group(1)
             solver = self.env.get("XHT_CAPTCHA_SOLVER", "auto").lower() or "auto"
-            if solver not in ("auto", "2captcha", "chaojiying"):
+            if solver not in ("auto", "2captcha", "chaojiying", "jfbym"):
                 return (
                     "未配置有效的滑块求解器。请在 /opt/QL-XHT/.env 中设置：\n"
                     "XHT_CAPTCHA_SOLVER=auto       # 浏览器+OpenCV（免费，成功率有限）\n"
-                "XHT_CAPTCHA_SOLVER=jfbym      # 云码双图滑块识别（付费，推荐）\n"
-                "XHT_CAPTCHA_SOLVER=2captcha   # 2Captcha 第三方打码\n"
-                "或直接使用：XHT登录 token [你的JWT]"
+                    "XHT_CAPTCHA_SOLVER=jfbym      # 云码双图滑块识别（付费，推荐）\n"
+                    "XHT_CAPTCHA_SOLVER=2captcha   # 2Captcha 第三方打码\n"
+                    "或直接使用：XHT登录 token [你的JWT]"
                 )
 
-            # 短信登录第一步：发送验证码
-            ok, msg, form_token = self.flow.login_by_sms(phone, solver_type=solver)
+            # 短信登录需要 Playwright，在独立线程中运行以避免与 asyncio 冲突
+            try:
+                with ThreadPoolExecutor(max_workers=1) as pool:
+                    future = pool.submit(self.flow.login_by_sms, phone, solver)
+                    try:
+                        ok, msg, form_token = future.result(timeout=90)
+                    except FuturesTimeoutError:
+                        return "验证码发送超时（90秒），请稍后重试"
+            except Exception as e:
+                return f"发送验证码异常：{e}\n建议改用「XHT登录 token [你的JWT]」"
+
             if ok and form_token:
                 sessions.set(sender_id, group_id, "xht", {
                     "phone": phone,
