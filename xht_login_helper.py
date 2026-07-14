@@ -358,11 +358,16 @@ class ThirdPartySolver(CaptchaSolver):
             raise RuntimeError(f"云码返回非JSON: {r.text[:200]}")
 
         logger.info(f"云码响应: {resp}")
-        if resp.get("code") != 0 and resp.get("code") != "0":
+        # 云码成功时外层 code=10000，内层 data.code=0
+        outer_code = resp.get("code")
+        if outer_code not in (0, "0", 10000, "10000"):
+            raise RuntimeError(f"云码识别失败: {resp}")
+        inner_data = resp.get("data", {})
+        if isinstance(inner_data, dict) and inner_data.get("code") not in (0, "0"):
             raise RuntimeError(f"云码识别失败: {resp}")
 
         # 返回的是像素距离 px（以背景图最左侧为 0）
-        distance = resp.get("data", {}).get("data", "")
+        distance = inner_data.get("data", "") if isinstance(inner_data, dict) else ""
         try:
             distance = float(distance)
         except (ValueError, TypeError):
