@@ -152,7 +152,14 @@ XHT登录 13800138000
 
 **B. 第三方打码平台（付费，更稳定）**
 
-以 2Captcha 为例，在 `.env` 中：
+以云码（jfbym）为例，在 `.env` 中：
+
+```bash
+XHT_CAPTCHA_SOLVER="jfbym"
+XHT_CAPTCHA_API_KEY="你的云码_Token"
+```
+
+或使用 2Captcha：
 
 ```bash
 XHT_CAPTCHA_SOLVER="2captcha"
@@ -167,6 +174,8 @@ XHT_CAPTCHA_API_KEY="用户名:密码"
 ```
 
 QQ 命令同上。
+
+> 推荐：针对阿里云的**双图拼图滑块**，云码 `type=20111` 接口最合适，返回的是缺口距离（像素），直接拖动即可。
 
 ### 8. 创建青龙定时任务
 
@@ -204,8 +213,8 @@ QQ 命令同上。
 | `XHT_BASE_URL` | 否 | `https://app.xuhuimedia.cn/media-basic-port` | 徐汇通 API 地址 |
 | `XHT_DEVICE_ID` | 否 | 自动生成 | 32位设备标识 |
 | `XHT_SITE_ID` | 否 | `310104` | 站点 ID |
-| `XHT_CAPTCHA_SOLVER` | 否 | 空 | 短信登录滑块求解器：auto / 2captcha / chaojiying |
-| `XHT_CAPTCHA_API_KEY` | 否 | 空 | 第三方打码平台 API Key |
+| `XHT_CAPTCHA_SOLVER` | 否 | 空 | 短信登录滑块求解器：auto / jfbym / 2captcha / chaojiying |
+| `XHT_CAPTCHA_API_KEY` | 否 | 空 | 第三方打码平台 API Key（jfbym 填云码 token） |
 | `XHT_NOTIFY` | 否 | 青龙内置 | 通知渠道 |
 | `XHT_TIMEOUT` | 否 | `15` | 请求超时（秒） |
 | `XHT_RETRY_COUNT` | 否 | `3` | 失败重试次数 |

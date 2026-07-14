@@ -131,8 +131,9 @@ class XHTPlugin(Plugin):
                 return (
                     "未配置有效的滑块求解器。请在 /opt/QL-XHT/.env 中设置：\n"
                     "XHT_CAPTCHA_SOLVER=auto       # 浏览器+OpenCV（免费，成功率有限）\n"
-                    "XHT_CAPTCHA_SOLVER=2captcha   # 第三方打码（付费，更稳定）\n"
-                    "或直接使用：XHT登录 token [你的JWT]"
+                "XHT_CAPTCHA_SOLVER=jfbym      # 云码双图滑块识别（付费，推荐）\n"
+                "XHT_CAPTCHA_SOLVER=2captcha   # 2Captcha 第三方打码\n"
+                "或直接使用：XHT登录 token [你的JWT]"
                 )
 
             # 短信登录第一步：发送验证码

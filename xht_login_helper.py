@@ -64,7 +64,7 @@ QL_CLIENT_ID = os.environ.get("QL_CLIENT_ID", "")
 QL_CLIENT_SECRET = os.environ.get("QL_CLIENT_SECRET", "")
 
 # 第三方打码配置
-CAPTCHA_SOLVER = os.environ.get("XHT_CAPTCHA_SOLVER", "").lower()  # "2captcha" / "chaojiying" / ""
+CAPTCHA_SOLVER = os.environ.get("XHT_CAPTCHA_SOLVER", "").lower()  # "auto" / "2captcha" / "chaojiying" / "jfbym"
 CAPTCHA_API_KEY = os.environ.get("XHT_CAPTCHA_API_KEY", "")
 
 UA_APP = "xu hui tong/2.5.0 (iPhone; iOS 26.5; Scale/3.00)"
@@ -294,12 +294,16 @@ class BrowserAutoSolver(CaptchaSolver):
 
 
 class ThirdPartySolver(CaptchaSolver):
-    """第三方打码平台（2Captcha / 超级鹰）"""
+    """第三方打码平台（2Captcha / 超级鹰 / 云码 jfbym）"""
 
     def solve(self, page):
         if not CAPTCHA_API_KEY:
             raise RuntimeError("未配置 XHT_CAPTCHA_API_KEY")
 
+        if CAPTCHA_SOLVER == "jfbym":
+            return self._solve_jfbym(page)
+
+        # 2captcha / chaojiying 使用整张截图
         element = page.locator(".aliyunCaptcha-body").first
         if element.count() == 0:
             element = page.locator("#aliyunCaptcha-img").first
@@ -311,6 +315,54 @@ class ThirdPartySolver(CaptchaSolver):
         elif CAPTCHA_SOLVER == "chaojiying":
             return self._solve_chaojiying(b64, element)
         raise RuntimeError(f"不支持的 solver: {CAPTCHA_SOLVER}")
+
+    def _img_b64_from_page(self, page, selector):
+        """从页面元素 src 获取 base64，支持 data URI 或 URL"""
+        src = page.eval_on_selector(selector, "el => el.src")
+        if src.startswith("data:image"):
+            return src.split(",", 1)[1]
+        r = requests.get(src, headers={"User-Agent": UA_WEB}, timeout=15)
+        return base64.b64encode(r.content).decode()
+
+    def _solve_jfbym(self, page):
+        """
+        云码（jfbym）双图滑块识别
+        接口：http://api.jfbym.com/api/YmServer/customApi
+        类型：20111（双图滑块，返回像素距离）
+        """
+        url = "http://api.jfbym.com/api/YmServer/customApi"
+        bg_b64 = self._img_b64_from_page(page, "#aliyunCaptcha-img")
+        slide_b64 = self._img_b64_from_page(page, "#aliyunCaptcha-puzzle")
+
+        payload = {
+            "token": CAPTCHA_API_KEY,
+            "type": "20111",
+            "slide_image": slide_b64,
+            "background_image": bg_b64,
+        }
+        headers = {"Content-Type": "application/json"}
+        r = requests.post(url, headers=headers, data=json.dumps(payload), timeout=30)
+        try:
+            resp = r.json()
+        except Exception as e:
+            raise RuntimeError(f"云码返回非JSON: {r.text[:200]}")
+
+        logger.info(f"云码响应: {resp}")
+        if resp.get("code") != 0 and resp.get("code") != "0":
+            raise RuntimeError(f"云码识别失败: {resp}")
+
+        # 返回的是像素距离 px（以背景图最左侧为 0）
+        distance = resp.get("data", {}).get("data", "")
+        try:
+            distance = float(distance)
+        except (ValueError, TypeError):
+            raise RuntimeError(f"云码返回距离异常: {distance}")
+
+        # 云码返回的是图片像素距离，需要按页面显示宽度缩放
+        # 页面中验证码显示宽度约 300px
+        box = page.locator("#aliyunCaptcha-img").first.bounding_box()
+        scale = box["width"] / 300 if box else 1.0
+        return distance * scale
 
     def _solve_2captcha(self, b64, element):
         url = "http://2captcha.com/in.php"
@@ -444,7 +496,7 @@ class XHTLoginFlow:
             time.sleep(2)
 
             # 选择求解器
-            if solver_type == "2captcha" or solver_type == "chaojiying":
+            if solver_type in ("2captcha", "chaojiying", "jfbym"):
                 solver = ThirdPartySolver()
             else:
                 solver = BrowserAutoSolver()
@@ -471,7 +523,7 @@ def main():
     parser = argparse.ArgumentParser(description="徐汇通登录辅助")
     parser.add_argument("--token", help="直接绑定 JWT Token")
     parser.add_argument("--sms", help="手机号，使用短信验证码登录")
-    parser.add_argument("--solver", default="auto", choices=["auto", "2captcha", "chaojiying"], help="滑块求解器")
+    parser.add_argument("--solver", default="auto", choices=["auto", "2captcha", "chaojiying", "jfbym"], help="滑块求解器")
     parser.add_argument("--code", help="短信验证码（可选，如不提供则只发送短信）")
     parser.add_argument("--form-token", help="短信登录的 formToken（可选）")
     args = parser.parse_args()
