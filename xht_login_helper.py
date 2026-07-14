@@ -225,22 +225,36 @@ class CaptchaSolver:
         """返回 captchaVerifyParam 字符串，失败返回 None"""
         raise NotImplementedError
 
-    def _human_drag(self, page, selector, distance, duration=1.0):
-        """模拟人类拖动滑块"""
+    def _human_drag(self, page, selector, distance, duration=1.2):
+        """模拟人类拖动滑块（带回弹和微调）"""
         box = page.locator(selector).first.bounding_box()
         start_x = box["x"] + box["width"] / 2
         start_y = box["y"] + box["height"] / 2
         steps = int(duration * 80)
         page.mouse.move(start_x, start_y)
+        time.sleep(random.uniform(0.1, 0.3))
         page.mouse.down()
-        for i in range(steps + 1):
+        time.sleep(random.uniform(0.05, 0.15))
+
+        # 主拖动：先快后慢的缓动曲线
+        for i in range(1, steps + 1):
             t = i / steps
-            t2 = 2 * t * t if t < 0.5 else 1 - pow(-2 * t + 2, 2) / 2
-            page.mouse.move(
-                start_x + distance * t2 + random.uniform(-1, 1),
-                start_y + random.uniform(-2, 2) * (1 - t)
-            )
-            time.sleep(duration / steps)
+            # ease-out-quart: 起步快，末尾慢
+            t2 = 1 - pow(1 - t, 4)
+            x = start_x + distance * t2
+            # Y 轴轻微抖动，越靠近终点越稳定
+            y = start_y + random.uniform(-1.5, 1.5) * (1 - t * 0.8)
+            page.mouse.move(x, y)
+            time.sleep(duration / steps * (0.5 + 0.5 * (1 - t)))  # 末尾更慢
+
+        # 到达后微小回弹（模拟人类过冲后修正）
+        overshoot = random.uniform(2, 6)
+        page.mouse.move(start_x + distance + overshoot, start_y + random.uniform(-0.5, 0.5))
+        time.sleep(random.uniform(0.02, 0.06))
+        page.mouse.move(start_x + distance - random.uniform(1, 3), start_y)
+        time.sleep(random.uniform(0.02, 0.05))
+        page.mouse.move(start_x + distance, start_y + random.uniform(-0.3, 0.3))
+        time.sleep(random.uniform(0.05, 0.15))
         page.mouse.up()
 
     def _wait_for_captcha(self, page, timeout=10):
@@ -563,8 +577,32 @@ class XHTLoginFlow:
             else:
                 solver = BrowserAutoSolver()
 
-            logger.info(f"使用求解器: {solver.__class__.__name__}")
-            param = solver.solve(page)
+            # 最多重试 3 次
+            max_retries = 3
+            param = None
+            for attempt in range(1, max_retries + 1):
+                logger.info(f"第 {attempt}/{max_retries} 次尝试过滑块（{solver.__class__.__name__}）")
+                # 重置回调标志
+                page.evaluate("window._xht_captcha_done = false; window._xht_captcha_param = null;")
+                param = solver.solve(page)
+                if param:
+                    logger.info(f"第 {attempt} 次验证通过！")
+                    break
+                if attempt < max_retries:
+                    logger.info(f"第 {attempt} 次验证失败，刷新重试...")
+                    # 点击刷新按钮
+                    try:
+                        refresh_btn = page.locator(".aliyunCaptcha-refresh").first
+                        if refresh_btn.count() == 0:
+                            refresh_btn = page.locator("#aliyunCaptcha-refresh").first
+                        refresh_btn.click()
+                        time.sleep(2)
+                    except Exception as e:
+                        logger.warning(f"刷新验证码失败: {e}，重新加载页面")
+                        page.reload()
+                        page.wait_for_load_state("networkidle", timeout=30000)
+                        time.sleep(2)
+
             browser.close()
 
             if not param:

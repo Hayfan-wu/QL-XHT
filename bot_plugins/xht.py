@@ -142,9 +142,9 @@ class XHTPlugin(Plugin):
                 with ThreadPoolExecutor(max_workers=1) as pool:
                     future = pool.submit(self.flow.login_by_sms, phone, solver)
                     try:
-                        ok, msg, form_token = future.result(timeout=90)
+                        ok, msg, form_token = future.result(timeout=180)
                     except FuturesTimeoutError:
-                        return "验证码发送超时（90秒），请稍后重试"
+                        return "验证码发送超时，请稍后重试"
             except Exception as e:
                 err_msg = str(e)
                 hint = (
