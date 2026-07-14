@@ -396,9 +396,24 @@ class ThirdPartySolver(CaptchaSolver):
         except (ValueError, TypeError):
             raise RuntimeError(f"云码返回距离异常: {distance}")
 
-        # 云码返回的是图片像素距离，需要按页面显示宽度缩放
-        box = page.locator("#aliyunCaptcha-img").first.bounding_box()
-        scale = box["width"] / 300 if box else 1.0
+        # 云码返回的是背景原图上缺口左边缘到最左边的像素距离
+        # 需要按原图实际宽度与页面显示宽度的比例缩放到页面像素
+        bg_box = page.locator("#aliyunCaptcha-img").first.bounding_box()
+        display_width = bg_box["width"] if bg_box else 300
+
+        # 用 JS 获取图片自然宽度（即原图实际像素宽度）
+        try:
+            natural_width = page.eval_on_selector("#aliyunCaptcha-img", "el => el.naturalWidth")
+            if natural_width and natural_width > 0:
+                scale = display_width / natural_width
+                logger.info(f"原图宽度: {natural_width}px, 显示宽度: {display_width}px, 缩放: {scale:.4f}")
+            else:
+                scale = 1.0
+                logger.info(f"无法获取原图宽度，使用缩放 1.0")
+        except Exception as e:
+            scale = 1.0
+            logger.warning(f"获取原图宽度失败: {e}，使用缩放 1.0")
+
         return distance * scale
 
     def _solve_2captcha(self, page):
