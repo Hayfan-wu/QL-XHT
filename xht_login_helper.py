@@ -344,7 +344,7 @@ class ThirdPartySolver(CaptchaSolver):
         logger.info(f"背景图位置: x={bg_box['x']}, y={bg_box['y']}, w={bg_box['width']}")
 
         # 拖动策略：鼠标从滑块中心开始，拖动距离 = 识别距离（缩放后）。
-        # 云码 20111 返回的是背景图上缺口最左边缘到最左侧的像素距离，
+        # 云码 20226 返回的是截图上目标位置到最左侧的像素距离，
         # 对于底部滑块按钮，该距离即为其中心应移动的距离。
         drag_distance = distance
 
@@ -377,19 +377,33 @@ class ThirdPartySolver(CaptchaSolver):
 
     def _solve_jfbym(self, page):
         """
-        云码（jfbym）双图滑块识别
+        云码（jfbym）阿里云滑块识别
         接口：http://api.jfbym.com/api/YmServer/customApi
-        类型：20111（双图滑块，返回像素距离）
+        类型：20226（滑块_AL，返回像素距离）
         """
         url = "http://api.jfbym.com/api/YmServer/customApi"
-        bg_b64 = self._img_b64_from_page(page, "#aliyunCaptcha-img")
-        slide_b64 = self._img_b64_from_page(page, "#aliyunCaptcha-puzzle")
+
+        # 20226 是单图接口，截取整个验证码区域（含滑块、缺口、滑轨）
+        element = page.locator(".aliyunCaptcha-body").first
+        if element.count() == 0:
+            element = page.locator("#aliyunCaptcha-img").first
+        screenshot = element.screenshot()
+        b64 = base64.b64encode(screenshot).decode()
+
+        # 保存调试图方便核对
+        import time as _time
+        debug_path = f"/tmp/xht_jfbym_{int(_time.time())}.png"
+        try:
+            with open(debug_path, "wb") as f:
+                f.write(screenshot)
+            logger.info(f"调试图已保存: {debug_path}")
+        except Exception as e:
+            logger.warning(f"保存调试图失败: {e}")
 
         payload = {
             "token": CAPTCHA_API_KEY,
-            "type": "20111",
-            "slide_image": slide_b64,
-            "background_image": bg_b64,
+            "type": "20226",
+            "image": b64,
         }
         headers = {"Content-Type": "application/json"}
         r = requests.post(url, headers=headers, data=json.dumps(payload), timeout=30)
@@ -407,30 +421,31 @@ class ThirdPartySolver(CaptchaSolver):
         if isinstance(inner_data, dict) and inner_data.get("code") not in (0, "0"):
             raise RuntimeError(f"云码识别失败: {resp}")
 
-        # 返回的是像素距离 px（以背景图最左侧为 0）
+        # 返回的是像素距离 px（以图片最左侧为 0）
         distance = inner_data.get("data", "") if isinstance(inner_data, dict) else ""
         try:
             distance = float(distance)
         except (ValueError, TypeError):
             raise RuntimeError(f"云码返回距离异常: {distance}")
 
-        # 云码返回的是背景原图上缺口左边缘到最左边的像素距离
-        # 需要按原图实际宽度与页面显示宽度的比例缩放到页面像素
-        bg_box = page.locator("#aliyunCaptcha-img").first.bounding_box()
-        display_width = bg_box["width"] if bg_box else 300
-
-        # 用 JS 获取图片自然宽度（即原图实际像素宽度）
+        # 20226 返回的距离已经是截图上的像素距离，需按截图与页面显示比例缩放
+        box = element.bounding_box()
+        display_width = box["width"] if box else 300
+        # 截图宽度即为原图宽度
         try:
-            natural_width = page.eval_on_selector("#aliyunCaptcha-img", "el => el.naturalWidth")
-            if natural_width and natural_width > 0:
-                scale = display_width / natural_width
-                logger.info(f"原图宽度: {natural_width}px, 显示宽度: {display_width}px, 缩放: {scale:.4f}")
+            if _CV2_AVAILABLE:
+                img_arr = cv2.imdecode(np.frombuffer(screenshot, np.uint8), cv2.IMREAD_COLOR)
+                original_width = img_arr.shape[1]
             else:
-                scale = 1.0
-                logger.info(f"无法获取原图宽度，使用缩放 1.0")
+                import io
+                from PIL import Image as PILImage
+                img = PILImage.open(io.BytesIO(screenshot))
+                original_width = img.width
+            scale = display_width / original_width if original_width > 0 else 1.0
+            logger.info(f"截图宽度: {original_width}px, 页面显示宽度: {display_width}px, 缩放: {scale:.4f}")
         except Exception as e:
             scale = 1.0
-            logger.warning(f"获取原图宽度失败: {e}，使用缩放 1.0")
+            logger.warning(f"获取截图宽度失败: {e}，使用缩放 1.0")
 
         return distance * scale
 
