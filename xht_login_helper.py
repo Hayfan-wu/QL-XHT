@@ -735,7 +735,7 @@ class XHTLoginFlow:
                 })();
             """)
 
-            # 策略E：用 page.route 拦截 SMS 发送请求，捕获 captchaVerifyParam
+            # 策略E：用 page.route 拦截 SMS 请求，捕获 captchaVerifyParam
             def _intercept_sms_request(route):
                 request = route.request
                 if request.post_data and 'captchaVerifyParam' in (request.post_data or ''):
@@ -765,17 +765,45 @@ class XHTLoginFlow:
 
             logger.info(f"使用求解器: {solver.__class__.__name__}")
             param = solver.solve(page)
-            browser.close()
 
             if not param:
+                browser.close()
                 return False, "未能获取 captchaVerifyParam，滑块验证失败", None
 
-            logger.info("滑块验证通过，准备发送短信...")
-            ok, msg, form_token = self.api.send_sms(phone, param)
-            if not ok:
-                return False, f"发送短信失败: {msg}", None
+            logger.info("滑块验证通过，通过浏览器页面发送短信...")
+            # 在浏览器页面内调用 SMS API，确保 session/cookies/deviceId
+            sms = f"{XHT_CAPTCHA_WEB}/api/app/auth/captcha/validate/send_sms_code"
+            sms_result = page.evaluate("""
+                async ([url, phone, param, deviceId, siteId]) => {
+                    try {
+                        const resp = await fetch(url, {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'deviceId': deviceId,
+                                'siteId': siteId,
+                            },
+                            body: JSON.stringify({
+                                mobile: phone,
+                                sceneType: 'app',
+                                captchaVerifyParam: param,
+                            }),
+                        });
+                        const data = await resp.json();
+                        data;
+                    } catch(e) {
+                        {error: e.message};
+                    }
+                }
+            """, [sms, phone, param, XHT_DEVICE_ID, XHT_SITE_ID])
 
-            return True, f"短信已发送，formToken={form_token}", form_token
+            logger.info(f"页面内 SMS 响应: {sms_result}")
+            browser.close()
+
+            if sms_result.get("code") == 0:
+                form_token = sms_result.get("data", {}).get("formToken", "")
+                return True, f"短信已发送，formToken={form_token}", form_token
+            return False, f"发送短信失败: {sms_result.get('msg', sms_result.get('error', '未知'))}", None
 
 
 # ============================================================
