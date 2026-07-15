@@ -377,18 +377,82 @@ class ThirdPartySolver(CaptchaSolver):
 
     def _solve_jfbym(self, page):
         """
-        云码（jfbym）阿里云滑块识别
+        云码（jfbym）滑块识别
         接口：http://api.jfbym.com/api/YmServer/customApi
-        类型：20226（滑块_AL，返回像素距离）
+        类型可通过环境变量 XHT_CAPTCHA_TYPE 指定：
+          20111 双图滑块（bg + slide）
+          20226 滑块_AL 单图（推荐，需含滑轨）
+          22222 单图滑块优化
         """
+        import time as _time
         url = "http://api.jfbym.com/api/YmServer/customApi"
+        jfbym_type = os.environ.get("XHT_CAPTCHA_TYPE", "20226").strip()
 
-        # 20226 是单图接口，截取整个验证码区域（含滑块、缺口、滑轨）
-        element = page.locator(".aliyunCaptcha-body").first
-        if element.count() == 0:
-            element = page.locator("#aliyunCaptcha-img").first
-        screenshot = element.screenshot()
-        b64 = base64.b64encode(screenshot).decode()
+        if jfbym_type == "20111":
+            # 双图滑块：分别传背景图和滑块图
+            bg_b64 = self._img_b64_from_page(page, "#aliyunCaptcha-img")
+            slide_b64 = self._img_b64_from_page(page, "#aliyunCaptcha-puzzle")
+            payload = {
+                "token": CAPTCHA_API_KEY,
+                "type": "20111",
+                "slide_image": slide_b64,
+                "background_image": bg_b64,
+            }
+            scale = self._jfbym_scale_from_natural_width(page)
+        else:
+            # 单图接口：截取完整验证码区域（图片 + 滑轨）
+            screenshot = self._screenshot_captcha_area(page)
+            b64 = base64.b64encode(screenshot).decode()
+            payload = {
+                "token": CAPTCHA_API_KEY,
+                "type": jfbym_type,
+                "image": b64,
+            }
+            scale = self._jfbym_scale_from_screenshot(screenshot, page)
+
+        headers = {"Content-Type": "application/json"}
+        r = requests.post(url, headers=headers, data=json.dumps(payload), timeout=30)
+        try:
+            resp = r.json()
+        except Exception as e:
+            raise RuntimeError(f"云码返回非JSON: {r.text[:200]}")
+
+        logger.info(f"云码响应 (type={jfbym_type}): {resp}")
+        # 云码成功时外层 code=10000，内层 data.code=0
+        outer_code = resp.get("code")
+        if outer_code not in (0, "0", 10000, "10000"):
+            raise RuntimeError(f"云码识别失败: {resp}")
+        inner_data = resp.get("data", {})
+        if isinstance(inner_data, dict) and inner_data.get("code") not in (0, "0"):
+            raise RuntimeError(f"云码识别失败: {resp}")
+
+        distance = inner_data.get("data", "") if isinstance(inner_data, dict) else ""
+        try:
+            distance = float(distance)
+        except (ValueError, TypeError):
+            raise RuntimeError(f"云码返回距离异常: {distance}")
+
+        return distance * scale
+
+    def _screenshot_captcha_area(self, page):
+        """截取包含图片和滑轨的完整验证码区域"""
+        body = page.locator(".aliyunCaptcha-body").first
+        if body.count() == 0:
+            body = page.locator("#aliyunCaptcha-img").first
+
+        box = body.bounding_box()
+        if not box:
+            # 兜底：截取整个页面
+            return page.screenshot()
+
+        # 向下扩展 120px 以包含滑轨，左右留 10px 边距
+        clip = {
+            "x": max(0, box["x"] - 10),
+            "y": max(0, box["y"] - 10),
+            "width": box["width"] + 20,
+            "height": box["height"] + 140,
+        }
+        screenshot = page.screenshot(clip=clip)
 
         # 保存调试图方便核对
         import time as _time
@@ -399,40 +463,31 @@ class ThirdPartySolver(CaptchaSolver):
             logger.info(f"调试图已保存: {debug_path}")
         except Exception as e:
             logger.warning(f"保存调试图失败: {e}")
+        return screenshot
 
-        payload = {
-            "token": CAPTCHA_API_KEY,
-            "type": "20226",
-            "image": b64,
-        }
-        headers = {"Content-Type": "application/json"}
-        r = requests.post(url, headers=headers, data=json.dumps(payload), timeout=30)
+    def _jfbym_scale_from_natural_width(self, page):
+        """20111：按背景图 naturalWidth 与显示宽度缩放"""
+        bg_box = page.locator("#aliyunCaptcha-img").first.bounding_box()
+        display_width = bg_box["width"] if bg_box else 300
         try:
-            resp = r.json()
+            natural_width = page.eval_on_selector("#aliyunCaptcha-img", "el => el.naturalWidth")
+            if natural_width and natural_width > 0:
+                scale = display_width / natural_width
+                logger.info(f"原图宽度: {natural_width}px, 显示宽度: {display_width}px, 缩放: {scale:.4f}")
+                return scale
         except Exception as e:
-            raise RuntimeError(f"云码返回非JSON: {r.text[:200]}")
+            logger.warning(f"获取原图宽度失败: {e}")
+        return 1.0
 
-        logger.info(f"云码响应: {resp}")
-        # 云码成功时外层 code=10000，内层 data.code=0
-        outer_code = resp.get("code")
-        if outer_code not in (0, "0", 10000, "10000"):
-            raise RuntimeError(f"云码识别失败: {resp}")
-        inner_data = resp.get("data", {})
-        if isinstance(inner_data, dict) and inner_data.get("code") not in (0, "0"):
-            raise RuntimeError(f"云码识别失败: {resp}")
-
-        # 返回的是像素距离 px（以图片最左侧为 0）
-        distance = inner_data.get("data", "") if isinstance(inner_data, dict) else ""
+    def _jfbym_scale_from_screenshot(self, screenshot, page):
+        """单图接口：按截图宽度与页面显示宽度缩放"""
         try:
-            distance = float(distance)
-        except (ValueError, TypeError):
-            raise RuntimeError(f"云码返回距离异常: {distance}")
+            body = page.locator(".aliyunCaptcha-body").first
+            if body.count() == 0:
+                body = page.locator("#aliyunCaptcha-img").first
+            box = body.bounding_box()
+            display_width = box["width"] if box else 300
 
-        # 20226 返回的距离已经是截图上的像素距离，需按截图与页面显示比例缩放
-        box = element.bounding_box()
-        display_width = box["width"] if box else 300
-        # 截图宽度即为原图宽度
-        try:
             if _CV2_AVAILABLE:
                 img_arr = cv2.imdecode(np.frombuffer(screenshot, np.uint8), cv2.IMREAD_COLOR)
                 original_width = img_arr.shape[1]
@@ -443,11 +498,10 @@ class ThirdPartySolver(CaptchaSolver):
                 original_width = img.width
             scale = display_width / original_width if original_width > 0 else 1.0
             logger.info(f"截图宽度: {original_width}px, 页面显示宽度: {display_width}px, 缩放: {scale:.4f}")
+            return scale
         except Exception as e:
-            scale = 1.0
             logger.warning(f"获取截图宽度失败: {e}，使用缩放 1.0")
-
-        return distance * scale
+            return 1.0
 
     def _solve_2captcha(self, page):
         element = page.locator(".aliyunCaptcha-body").first
