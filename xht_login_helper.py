@@ -191,11 +191,13 @@ class XHTAPI:
             "sceneType": "app",
             "captchaVerifyParam": captcha_param if isinstance(captcha_param, str) else json.dumps(captcha_param),
         }
+        logger.info(f"发送短信请求: mobile={phone}, captchaVerifyParam前100字符={str(captcha_param)[:100]}")
         r = requests.post(url, json=body, headers=headers, timeout=15)
         try:
             data = r.json()
         except Exception:
             return False, f"响应非JSON: {r.text[:200]}", ""
+        logger.info(f"短信API响应: code={data.get('code')}, msg={data.get('msg')}, data={data.get('data')}")
         if data.get("code") == 0:
             return True, "验证码已发送", data.get("data", {}).get("formToken", "")
         return False, data.get("msg", "发送失败"), ""
@@ -264,8 +266,9 @@ class CaptchaSolver:
                 done = page.evaluate("window._xht_captcha_done")
                 if done:
                     param = page.evaluate("window._xht_captcha_param")
+                    raw = page.evaluate("window._xht_captcha_raw || 'none'")
+                    logger.info(f"第 {i} 次轮询获取到 captchaVerifyParam，长度={len(param) if param else 0}，raw前100={raw[:100]}")
                     if param:
-                        logger.info(f"第 {i} 次轮询获取到 captchaVerifyParam")
                         return param
             except Exception:
                 pass
@@ -713,8 +716,14 @@ class XHTLoginFlow:
                         var _orig = window.initAliyunCaptcha;
                         window.initAliyunCaptcha = function(cfg) {
                             var cb = cfg.captchaVerifyCallback;
-                            cfg.captchaVerifyCallback = function(p) {
-                                window._xht_captcha_param = p;
+                            cfg.captchaVerifyCallback = function(result) {
+                                // 阿里云回调可能返回字符串或对象，统一提取
+                                if (typeof result === 'string') {
+                                    window._xht_captcha_param = result;
+                                } else if (result && typeof result === 'object') {
+                                    window._xht_captcha_param = result.captchaVerifyParam || result.data || JSON.stringify(result);
+                                }
+                                window._xht_captcha_raw = JSON.stringify(result);
                                 window._xht_captcha_done = true;
                                 if (cb) return cb.apply(this, arguments);
                                 return { captchaResult: true, bizResult: true };
