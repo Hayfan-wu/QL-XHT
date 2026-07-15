@@ -343,16 +343,15 @@ class ThirdPartySolver(CaptchaSolver):
         bg_box = page.locator("#aliyunCaptcha-img").first.bounding_box()
         logger.info(f"背景图位置: x={bg_box['x']}, y={bg_box['y']}, w={bg_box['width']}")
 
-        # 云码返回的是缺口最左边缘到背景图最左边缘的距离
-        # 拖动起点是滑块中心，所以最终拖动距离要减去滑块半宽
-        half_slider_width = box["width"] / 2
-        drag_distance = distance - half_slider_width
-        logger.info(f"减去滑块半宽 {half_slider_width:.1f}px 后实际拖动: {drag_distance:.1f}px")
+        # 拖动策略：鼠标从滑块中心开始，拖动距离 = 识别距离（缩放后）。
+        # 云码 20111 返回的是背景图上缺口最左边缘到最左侧的像素距离，
+        # 对于底部滑块按钮，该距离即为其中心应移动的距离。
+        drag_distance = distance
 
         # 限制拖动距离不超过滑轨范围
         max_drag = bg_box["width"] - box["width"]
         drag_distance = max(0, min(drag_distance, max_drag))
-        logger.info(f"限制范围后拖动距离: {drag_distance:.1f}px")
+        logger.info(f"最终拖动距离: {drag_distance:.1f}px")
 
         self._human_drag(page, "#aliyunCaptcha-sliding-slider", drag_distance)
         logger.info("拖动完成，等待 captcha 回调...")
@@ -582,32 +581,8 @@ class XHTLoginFlow:
             else:
                 solver = BrowserAutoSolver()
 
-            # 最多重试 3 次
-            max_retries = 3
-            param = None
-            for attempt in range(1, max_retries + 1):
-                logger.info(f"第 {attempt}/{max_retries} 次尝试过滑块（{solver.__class__.__name__}）")
-                # 重置回调标志
-                page.evaluate("window._xht_captcha_done = false; window._xht_captcha_param = null;")
-                param = solver.solve(page)
-                if param:
-                    logger.info(f"第 {attempt} 次验证通过！")
-                    break
-                if attempt < max_retries:
-                    logger.info(f"第 {attempt} 次验证失败，刷新重试...")
-                    # 点击刷新按钮
-                    try:
-                        refresh_btn = page.locator(".aliyunCaptcha-refresh").first
-                        if refresh_btn.count() == 0:
-                            refresh_btn = page.locator("#aliyunCaptcha-refresh").first
-                        refresh_btn.click()
-                        time.sleep(2)
-                    except Exception as e:
-                        logger.warning(f"刷新验证码失败: {e}，重新加载页面")
-                        page.reload()
-                        page.wait_for_load_state("networkidle", timeout=30000)
-                        time.sleep(2)
-
+            logger.info(f"使用求解器: {solver.__class__.__name__}")
+            param = solver.solve(page)
             browser.close()
 
             if not param:
