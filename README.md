@@ -71,7 +71,7 @@ XHT_SITE_ID="310104"
 
 | 字段 | 值 |
 |------|-----|
-| 名称 | `QL-XHT` |
+| 名称 | `QL_XHT` |
 | 链接 | `https://github.com/Hayfan-wu/QL-XHT.git` |
 | 定时规则 | `30 8 * * *` |
 | 白名单 | `xht.py` |
@@ -97,7 +97,7 @@ playwright install chromium
 
 青龙面板 -> 系统设置 -> 应用设置 -> 创建应用：
 
-- 名称：`QL-XHT`
+- 名称：`QL_XHT`
 - 权限：环境变量（读取、修改）
 
 创建后得到 `Client ID` 和 `Client Secret`，填入 `/opt/QL-XHT/.env`。
