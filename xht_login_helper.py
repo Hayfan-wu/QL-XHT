@@ -101,13 +101,19 @@ class QingLongEnv:
         return data["data"]["token"]
 
     def list_envs(self, search_value=""):
-        params = {"token": self.token}
+        params = {}
         if search_value:
             params["searchValue"] = search_value
-        r = requests.get(f"{QL_URL}/open/envs", params=params, timeout=15)
+        # 尝试 Bearer token 认证
+        r = requests.get(f"{QL_URL}/open/envs", params=params, headers={"Authorization": f"Bearer {self.token}"}, timeout=15)
         data = r.json()
         if data.get("code") != 200:
-            raise RuntimeError(f"获取环境变量失败: {data}")
+            # 回退到 query param 方式
+            params["token"] = self.token
+            r = requests.get(f"{QL_URL}/open/envs", params=params, timeout=15)
+            data = r.json()
+            if data.get("code") != 200:
+                raise RuntimeError(f"获取环境变量失败: {data}")
         return data.get("data", [])
 
     def create_env(self, name, value, remarks=""):
@@ -613,8 +619,14 @@ class XHTLoginFlow:
         ok, info = self.api.query_user(token)
         if not ok:
             return False, f"Token 校验失败: {info}", None
-        save_ok, save_msg = self.save_token(token, remarks=f"手机号 {info.get('mobile', '')}")
-        return save_ok, save_msg, info
+        # 保存到青龙，失败不影响登录结果
+        save_msg = ""
+        try:
+            save_ok, msg = self.save_token(token, remarks=f"手机号 {info.get('mobile', '')}")
+            save_msg = f"（{msg}）" if save_ok else f"（保存失败: {msg}）"
+        except Exception as e:
+            save_msg = f"（保存异常: {e}）"
+        return True, save_msg, info
 
     def login_by_sms(self, phone, solver_type="auto"):
         """
