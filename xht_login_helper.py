@@ -343,13 +343,18 @@ class ThirdPartySolver(CaptchaSolver):
         bg_box = page.locator("#aliyunCaptcha-img").first.bounding_box()
         logger.info(f"背景图位置: x={bg_box['x']}, y={bg_box['y']}, w={bg_box['width']}")
 
+        # 云码返回的是缺口最左边缘到背景图最左边缘的距离
+        # 拖动起点是滑块中心，所以最终拖动距离要减去滑块半宽
+        half_slider_width = box["width"] / 2
+        drag_distance = distance - half_slider_width
+        logger.info(f"减去滑块半宽 {half_slider_width:.1f}px 后实际拖动: {drag_distance:.1f}px")
+
         # 限制拖动距离不超过滑轨范围
         max_drag = bg_box["width"] - box["width"]
-        if distance > max_drag:
-            logger.warning(f"距离 {distance:.1f} 超过最大拖动 {max_drag:.1f}，已截断")
-            distance = max_drag
+        drag_distance = max(0, min(drag_distance, max_drag))
+        logger.info(f"限制范围后拖动距离: {drag_distance:.1f}px")
 
-        self._human_drag(page, "#aliyunCaptcha-sliding-slider", distance)
+        self._human_drag(page, "#aliyunCaptcha-sliding-slider", drag_distance)
         logger.info("拖动完成，等待 captcha 回调...")
         result = self._wait_for_captcha(page)
         if result:
