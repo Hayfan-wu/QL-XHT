@@ -248,7 +248,7 @@ class CaptchaSolver:
             time.sleep(duration / steps * (0.5 + 0.5 * (1 - t)))  # 末尾更慢
 
         # 到达后微小回弹（模拟人类过冲后修正）
-        overshoot = random.uniform(2, 6)
+        overshoot = random.uniform(1, 3)
         page.mouse.move(start_x + distance + overshoot, start_y + random.uniform(-0.5, 0.5))
         time.sleep(random.uniform(0.02, 0.06))
         page.mouse.move(start_x + distance - random.uniform(1, 3), start_y)
@@ -257,12 +257,37 @@ class CaptchaSolver:
         time.sleep(random.uniform(0.05, 0.15))
         page.mouse.up()
 
-    def _wait_for_captcha(self, page, timeout=10):
+    def _wait_for_captcha(self, page, timeout=15):
         """等待滑块验证完成并返回 captchaVerifyParam"""
-        for _ in range(int(timeout * 2)):
-            if page.evaluate("window._xht_captcha_done"):
-                return page.evaluate("window._xht_captcha_param")
+        for i in range(int(timeout * 2)):
+            try:
+                done = page.evaluate("window._xht_captcha_done")
+                if done:
+                    param = page.evaluate("window._xht_captcha_param")
+                    if param:
+                        logger.info(f"第 {i} 次轮询获取到 captchaVerifyParam")
+                        return param
+            except Exception:
+                pass
             time.sleep(0.5)
+
+        # 兜底：检查页面 DOM 是否有验证成功元素
+        try:
+            body_html = page.evaluate("document.body.innerHTML.slice(0,500)")
+            if 'captchaVerifyParam' in body_html or 'success' in body_html.lower():
+                logger.info("页面 DOM 中出现成功标志，尝试提取")
+                param = page.evaluate("""
+                    (() => {
+                        if (window._xht_captcha_param) return window._xht_captcha_param;
+                        var m = document.body.innerHTML.match(/captchaVerifyParam[=:"]+([^"&\\s]+)/);
+                        return m ? m[1] : null;
+                    })()
+                """)
+                if param:
+                    return param
+        except Exception:
+            pass
+
         return None
 
 
@@ -445,11 +470,11 @@ class ThirdPartySolver(CaptchaSolver):
             # 兜底：截取整个页面
             return page.screenshot()
 
-        # 向下扩展 120px 以包含滑轨，左右留 10px 边距
+        # 只向下扩展 140px 以包含滑轨，不加水平 padding
         clip = {
-            "x": max(0, box["x"] - 10),
+            "x": box["x"],
             "y": max(0, box["y"] - 10),
-            "width": box["width"] + 20,
+            "width": box["width"],
             "height": box["height"] + 140,
         }
         screenshot = page.screenshot(clip=clip)
@@ -624,21 +649,100 @@ class XHTLoginFlow:
             page.add_init_script("""
                 Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
                 Object.defineProperty(navigator, 'plugins', { get: () => [1,2,3,4,5] });
+                Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN','zh'] });
                 window.chrome = { runtime: {} };
                 window._xht_captcha_param = null;
                 window._xht_captcha_done = false;
-                const originalInit = window.initAliyunCaptcha;
-                window.initAliyunCaptcha = function(config) {
-                    const cb = config.captchaVerifyCallback;
-                    config.captchaVerifyCallback = function(captchaVerifyParam, bizResult) {
-                        window._xht_captcha_param = captchaVerifyParam;
-                        window._xht_captcha_done = true;
-                        if (cb) return cb(captchaVerifyParam, bizResult);
-                        return { captchaResult: true, bizResult: true };
-                    };
-                    if (originalInit) return originalInit(config);
+
+                // 策略A：拦截 postMessage（阿里云验证码通过 iframe 通信）
+                var _origAddEventListener = window.addEventListener;
+                window.addEventListener = function(type, listener, options) {
+                    if (type === 'message') {
+                        var wrapped = function(e) {
+                            try {
+                                if (e.data && typeof e.data === 'string') {
+                                    var data = JSON.parse(e.data);
+                                    if (data.captchaVerifyParam) {
+                                        window._xht_captcha_param = data.captchaVerifyParam;
+                                        window._xht_captcha_done = true;
+                                    }
+                                }
+                            } catch(ignored) {}
+                            return listener.call(this, e);
+                        };
+                        return _origAddEventListener.call(this, type, wrapped, options);
+                    }
+                    return _origAddEventListener.call(this, type, listener, options);
                 };
+
+                // 策略B：拦截 fetch 请求体
+                var _origFetch = window.fetch;
+                window.fetch = function(url, opts) {
+                    if (opts && opts.body && typeof opts.body === 'string') {
+                        try {
+                            var body = JSON.parse(opts.body);
+                            if (body.captchaVerifyParam) {
+                                window._xht_captcha_param = body.captchaVerifyParam;
+                                window._xht_captcha_done = true;
+                            }
+                        } catch(ignored) {}
+                    }
+                    return _origFetch.apply(this, arguments);
+                };
+
+                // 策略C：拦截 XHR 请求体
+                var _origXHRSend = XMLHttpRequest.prototype.send;
+                XMLHttpRequest.prototype.send = function(body) {
+                    if (body && typeof body === 'string') {
+                        try {
+                            var parsed = JSON.parse(body);
+                            if (parsed.captchaVerifyParam) {
+                                window._xht_captcha_param = parsed.captchaVerifyParam;
+                                window._xht_captcha_done = true;
+                            }
+                        } catch(ignored) {}
+                    }
+                    return _origXHRSend.call(this, body);
+                };
+
+                // 策略D：轮询检查 initAliyunCaptcha 挂载回调
+                (function _poll() {
+                    if (window._xht_captcha_done) return;
+                    if (window.initAliyunCaptcha && !window._xht_aliyun_hooked) {
+                        window._xht_aliyun_hooked = true;
+                        var _orig = window.initAliyunCaptcha;
+                        window.initAliyunCaptcha = function(cfg) {
+                            var cb = cfg.captchaVerifyCallback;
+                            cfg.captchaVerifyCallback = function(p) {
+                                window._xht_captcha_param = p;
+                                window._xht_captcha_done = true;
+                                if (cb) return cb.apply(this, arguments);
+                                return { captchaResult: true, bizResult: true };
+                            };
+                            return _orig(cfg);
+                        };
+                    }
+                    setTimeout(_poll, 100);
+                })();
             """)
+
+            # 策略E：用 page.route 拦截 SMS 发送请求，捕获 captchaVerifyParam
+            def _intercept_sms_request(route):
+                request = route.request
+                if request.post_data and 'captchaVerifyParam' in (request.post_data or ''):
+                    try:
+                        import json as _json
+                        body = _json.loads(request.post_data)
+                        if body.get('captchaVerifyParam'):
+                            logger.info("page.route 拦截到 captchaVerifyParam")
+                            page.evaluate("""
+                                window._xht_captcha_param = arguments[0];
+                                window._xht_captcha_done = true;
+                            """, body['captchaVerifyParam'])
+                    except Exception:
+                        pass
+                route.continue_()
+            page.route("**/send_sms_code*", _intercept_sms_request)
 
             logger.info("加载验证码页面...")
             page.goto(XHT_CAPTCHA_PAGE, wait_until="networkidle", timeout=60000)
