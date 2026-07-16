@@ -627,7 +627,16 @@ class XHTLoginFlow:
         except Exception as e:
             logger.warning(f"青龙环境未配置: {e}")
 
-    LOCAL_TOKEN_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".tokens")
+    def _token_file_paths():
+        """Token 文件候选路径：QL 脚本目录优先，Bot 目录兜底"""
+        paths = []
+        # QL 面板脚本目录
+        ql_dir = os.environ.get("QL_SCRIPT_DIR", "/ql/data/scripts")
+        if os.path.isdir(ql_dir):
+            paths.append(os.path.join(ql_dir, ".tokens"))
+        # Bot 自身目录（兜底）
+        paths.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".tokens"))
+        return paths
 
     def save_token(self, token, remarks=""):
         # 1. 尝试保存到青龙面板
@@ -649,21 +658,25 @@ class XHTLoginFlow:
         return False, ql_msg or "保存失败"
 
     def _save_token_local(self, token, remarks=""):
-        """保存 Token 到本地文件，格式与 QL 一致（& 分隔）"""
-        try:
-            tokens = []
-            if os.path.exists(self.LOCAL_TOKEN_FILE):
-                with open(self.LOCAL_TOKEN_FILE, "r", encoding="utf-8") as f:
-                    tokens = [t.strip() for t in f.read().split("&") if t.strip()]
-            if token in tokens:
-                return "Token 已存在"
-            tokens.append(token)
-            with open(self.LOCAL_TOKEN_FILE, "w", encoding="utf-8") as f:
-                f.write("&".join(tokens))
-            return f"当前共 {len(tokens)} 个账号"
-        except Exception as e:
-            logger.warning(f"本地保存 Token 失败: {e}")
-            return ""
+        """保存 Token 到 QL 脚本目录，供 xht.py 定时任务读取"""
+        for filepath in self._token_file_paths():
+            try:
+                tokens = []
+                if os.path.exists(filepath):
+                    with open(filepath, "r", encoding="utf-8") as f:
+                        tokens = [t.strip() for t in f.read().split("&") if t.strip()]
+                if token in tokens:
+                    logger.info(f"Token 已存在于 {filepath}")
+                    return f"当前共 {len(tokens)} 个账号"
+                tokens.append(token)
+                with open(filepath, "w", encoding="utf-8") as f:
+                    f.write("&".join(tokens))
+                logger.info(f"Token 已保存到 {filepath}")
+                return f"当前共 {len(tokens)} 个账号"
+            except Exception as e:
+                logger.warning(f"保存到 {filepath} 失败: {e}")
+                continue
+        return ""
 
     def login_by_token(self, token):
         ok, info = self.api.query_user(token)

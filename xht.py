@@ -179,11 +179,10 @@ def get_tokens_from_qinglong() -> list:
 def get_tokens_from_local() -> list:
     """从本地 .tokens 文件读取（兜底方案），检查多个可能路径"""
     import os
-    # 候选路径：QL 脚本目录、Bot 仓库目录、用户指定
     candidates = [
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), ".tokens"),  # QL 脚本目录
-        "/opt/QL-XHT/.tokens",  # Bot 仓库目录
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "QL-XHT", ".tokens"),  # QL 上级目录
+        os.path.join("/ql/data/scripts", ".tokens"),                       # QL 脚本根目录
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), ".tokens"), # xht.py 所在目录
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".tokens"), # 上级目录
     ]
     for local_file in candidates:
         try:
@@ -195,7 +194,7 @@ def get_tokens_from_local() -> list:
                     continue
                 tokens = [t.strip() for t in raw.split("&") if t.strip()]
                 if tokens:
-                    logger.info(f"从本地文件读取到 {len(tokens)} 个 Token（兜底，路径: {local_file}）")
+                    logger.info(f"从本地文件读取到 {len(tokens)} 个 Token（路径: {local_file}）")
                     return tokens
         except Exception as e:
             logger.warning(f"从本地文件读取 Token 失败 ({local_file}): {e}")
