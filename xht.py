@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-徐汇通 (XHT) 自动签到脚本
+徐汇通 (XHT) 自动签到 & 日常任务脚本
 适用于青龙面板，纯手动部署
 
 基于真实抓包接口重写：
@@ -15,13 +15,13 @@
 
 功能：
   1. 每日签到
-  2. 积分信息查询
-  3. 多账号支持（从环境变量 XHT_TOKEN 读取）
-  4. 多种推送通知
+  2. 阅读文章任务（20篇/天）— API: points/read/add
+  3. 观看视频任务（20个/天）— API: points/video/add
+  4. 积分信息查询
+  5. 多账号支持（从环境变量 XHT_TOKEN 读取）
+  6. 多种推送通知
 
-注意：阅读文章和观看视频任务无法通过 HTTP API 完成，
-      这些任务需要原生 APP 内操作（rmt:// 桥协议）。
-      详见 xht_simulate.py（模拟）和 xht_capture.py（抓包分析）。
+抓包来源：2026-07-16 徐汇通 APP v2.5.2 (iOS) 真实抓包
 """
 
 import os
@@ -108,8 +108,8 @@ XHT_TG_BOT_TOKEN = get_env("XHT_TG_BOT_TOKEN", "")
 XHT_TG_CHAT_ID = get_env("XHT_TG_CHAT_ID", "")
 XHT_TG_API_PROXY = get_env("XHT_TG_API_PROXY", "")
 
-# 默认 User-Agent
-DEFAULT_UA = "xu hui tong/2.5.0 (iPhone; iOS 26.5; Scale/3.00)"
+# 默认 User-Agent（匹配抓包版本 v2.5.2）
+DEFAULT_UA = "xu hui tong/2.5.2 (iPhone; iOS 26.5; Scale/3.00)"
 
 
 # ============================================================
@@ -295,8 +295,55 @@ class XHTClient:
             self._log(f"签到失败: {msg}")
             return False
 
+    def _do_points_task(self, path: str, task_name: str, current_progress: int, total: int = 20) -> int:
+        """通用积分任务：调用 points/xxx/add 直到完成或达到上限"""
+        if current_progress >= total:
+            self._log(f"{task_name}已完成 ({current_progress}/{total})，跳过")
+            return 0
+
+        need = total - current_progress
+        self._log(f"开始{task_name}，还需 {need} 次...")
+        success = 0
+        for i in range(need):
+            data = self._request("POST", path, json_body={})
+            if data.get("code") == 0:
+                success += 1
+            else:
+                msg = data.get("msg", "")
+                self._log(f"{task_name}第{i + 1}次失败: {msg}")
+                break
+            time.sleep(0.15)
+        self._log(f"{task_name}完成: {success}/{need}")
+        return success
+
+    def read_articles(self) -> int:
+        """阅读文章任务 (points/read/add)，最多20篇"""
+        info = self._request("POST", "/api/app/personal/score/info")
+        progress = 0
+        total = 20
+        if info.get("code") == 0:
+            for job in info["data"].get("jobs", []):
+                if "阅读" in job.get("title", ""):
+                    progress = job.get("progress", 0)
+                    total = job.get("totalProgress", 20)
+                    break
+        return self._do_points_task("/api/app/points/read/add", "阅读文章", progress, total)
+
+    def watch_videos(self) -> int:
+        """观看视频任务 (points/video/add)，最多20个"""
+        info = self._request("POST", "/api/app/personal/score/info")
+        progress = 0
+        total = 20
+        if info.get("code") == 0:
+            for job in info["data"].get("jobs", []):
+                if "视频" in job.get("title", ""):
+                    progress = job.get("progress", 0)
+                    total = job.get("totalProgress", 20)
+                    break
+        return self._do_points_task("/api/app/points/video/add", "观看视频", progress, total)
+
     def run(self):
-        self.stats = {"sign": False, "score": 0, "today": 0}
+        self.stats = {"sign": False, "score": 0, "today": 0, "read": 0, "video": 0}
 
         if not self.get_user_info():
             self._log("用户校验失败，跳过本次任务")
@@ -307,9 +354,16 @@ class XHTClient:
             self.stats["score"] = info.get("totalScore", 0)
             self.stats["today"] = info.get("todayPoint", 0)
 
+        # 1. 签到
         self.stats["sign"] = self.sign_in()
 
-        # 签到后重新获取最新积分
+        # 2. 阅读文章
+        self.stats["read"] = self.read_articles()
+
+        # 3. 观看视频
+        self.stats["video"] = self.watch_videos()
+
+        # 获取最终积分
         time.sleep(1)
         final_info = self.get_score_info()
         if final_info:
@@ -366,8 +420,17 @@ def main():
             sign = "✓" if s.get("sign") else "✗"
             score = s.get("score", 0)
             today = s.get("today", 0)
+            read = s.get("read", 0)
+            video = s.get("video", 0)
             lines.append(f"{nickname}")
             lines.append(f"积分 {score}  +{today}  签到{sign}")
+            if read or video:
+                tasks = []
+                if read:
+                    tasks.append(f"阅读{read}篇")
+                if video:
+                    tasks.append(f"视频{video}个")
+                lines.append(f"任务: {' '.join(tasks)}")
         lines.append("")
 
     content = "\n".join(lines)
