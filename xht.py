@@ -179,11 +179,21 @@ def get_tokens_from_qinglong() -> list:
 def get_tokens_from_local() -> list:
     """从本地 .tokens 文件读取（兜底方案），检查多个可能路径"""
     import os
-    candidates = [
-        os.path.join("/ql/data/scripts", ".tokens"),                       # QL 脚本根目录
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), ".tokens"), # xht.py 所在目录
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".tokens"), # 上级目录
-    ]
+    candidates = []
+
+    # 1. 环境变量显式指定
+    ql_dir = os.environ.get("QL_SCRIPT_DIR", "")
+    if ql_dir and os.path.isdir(ql_dir):
+        candidates.append(os.path.join(ql_dir, ".tokens"))
+
+    # 2. QL 容器内标准路径
+    if os.path.isdir("/ql/data/scripts"):
+        candidates.append("/ql/data/scripts/.tokens")
+
+    # 3. xht.py 所在目录及上级
+    candidates.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".tokens"))
+    candidates.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".tokens"))
+
     for local_file in candidates:
         try:
             if not os.path.exists(local_file):

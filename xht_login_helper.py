@@ -630,11 +630,31 @@ class XHTLoginFlow:
     def _token_file_paths():
         """Token 文件候选路径：QL 脚本目录优先，Bot 目录兜底"""
         paths = []
-        # QL 面板脚本目录
-        ql_dir = os.environ.get("QL_SCRIPT_DIR", "/ql/data/scripts")
-        if os.path.isdir(ql_dir):
+        # 1. 环境变量显式指定
+        ql_dir = os.environ.get("QL_SCRIPT_DIR", "")
+        if ql_dir and os.path.isdir(ql_dir):
             paths.append(os.path.join(ql_dir, ".tokens"))
-        # Bot 自身目录（兜底）
+
+        # 2. 自动探测 Docker volume 挂载的 QL scripts 目录
+        if not paths:
+            for vol_base in ["/var/lib/docker/volumes", "/var/lib/docker/overlay2"]:
+                if os.path.isdir(vol_base):
+                    try:
+                        for root, dirs, _ in os.walk(vol_base, topdown=True):
+                            dirs[:] = [d for d in dirs if len(root.split("/")) < 8]
+                            if root.endswith("/scripts") and "Hayfan-wu_QL-XHT" in dirs:
+                                paths.append(os.path.join(root, ".tokens"))
+                                break
+                    except Exception:
+                        pass
+                if paths:
+                    break
+
+        # 3. QL 容器内标准路径
+        if os.path.isdir("/ql/data/scripts"):
+            paths.append("/ql/data/scripts/.tokens")
+
+        # 4. Bot 自身目录（兜底）
         paths.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".tokens"))
         return paths
 
