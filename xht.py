@@ -21,6 +21,7 @@
 
 注意：阅读文章和观看视频任务无法通过 HTTP API 完成，
       这些任务需要原生 APP 内操作（rmt:// 桥协议）。
+      详见 xht_simulate.py（模拟）和 xht_capture.py（抓包分析）。
 """
 
 import os

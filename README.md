@@ -9,7 +9,7 @@
 - 多账号支持（通过环境变量 `XHT_TOKEN` 读取，`&` 分隔）
 - 多渠道推送通知（青龙内置、PushPlus、Server酱、Bark、Telegram）
 
-> 注意：阅读文章和观看视频任务无法通过 HTTP API 完成，这些任务需要原生 APP 内操作。
+> 注意：阅读文章和观看视频任务无法通过 HTTP API 完成。经过 200+ 个 API 路径探测、APK 逆向分析、H5 页面 JS 分析和浏览器模拟，确认阅读/视频进度追踪由原生 APP 的 native 层处理（`rmt://` 桥协议），HTTP 层无对应端点。详见下方「阅读/视频任务」章节。
 
 ## 快速部署
 
@@ -88,11 +88,66 @@ requests
 ```
 QL-XHT/
 ├── xht.py                # 青龙定时签到脚本
+├── xht_simulate.py       # Playwright 浏览器模拟脚本
+├── xht_capture.py        # 抓包分析辅助工具
 ├── bot_plugins/          # （已废弃，保留兼容）
 ├── .env.example          # 配置示例
 ├── requirements.txt      # Python 依赖
 └── README.md
 ```
+
+## 阅读/视频任务
+
+### 现状
+
+阅读文章（20篇/天）和观看视频（20个/天）的任务进度由原生 APP 的 native 层直接处理，无法通过 HTTP API 完成。经过以下全面分析：
+
+| 分析方向 | 方法 | 结果 |
+|---------|------|------|
+| API 路径探测 | 测试 200+ 个可能路径 | 全部返回 404 |
+| Gateway 域名 | `xuhui-gateway.shmedia.tech` | SSL 错误，不可访问 |
+| H5 页面 JS 分析 | `bridge-1.0.js`, `rmt-2.0.0.js` | 无阅读追踪代码 |
+| 浏览器模拟 | 集成浏览器加载文章页面 | 无追踪 API 调用 |
+| APK 逆向 | 下载并解包 APK | 360加固保护，无法解密 |
+| Native .so 库 | 搜索 lib 目录 | 均为第三方库，无 API URL |
+
+### 解决方案
+
+**方案一：抓包获取 API（推荐）**
+
+使用手机抓包工具捕获徐汇通 APP 的网络请求，找到阅读/视频追踪的 API 端点：
+
+```bash
+# 查看详细抓包指引
+python3 xht_capture.py --guide
+
+# 分析 HAR 抓包文件
+python3 xht_capture.py --har capture.har
+
+# 分析 mitmproxy flow 文件
+python3 xht_capture.py --flow xht_traffic.flow
+```
+
+**方案二：Playwright 浏览器模拟**
+
+使用 `xht_simulate.py` 在浏览器中模拟 APP 行为，捕获网络请求：
+
+```bash
+pip install playwright --break-system-packages
+playwright install chromium
+python3 xht_simulate.py --token YOUR_TOKEN --count 5
+```
+
+> 注意：浏览器模拟无法触发阅读进度更新（因为追踪由原生 APP 处理），
+> 但可以帮助捕获网络请求用于分析。
+
+**方案三：手动完成**
+
+每天在手机上打开徐汇通 APP，手动浏览 20 篇文章和 20 个视频即可完成任务。
+
+### 如何贡献
+
+如果你成功抓包获取到了阅读/视频追踪的 API 端点，请提交 Issue 或 PR 到本仓库，帮助完善脚本功能。
 
 ## 接口来源
 
