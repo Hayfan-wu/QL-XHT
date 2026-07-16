@@ -96,38 +96,49 @@ class QingLongEnv:
             "client_secret": QL_CLIENT_SECRET,
         }, timeout=15)
         data = r.json()
+        logger.info(f"青龙 token 获取: code={data.get('code')}, msg={data.get('message', '')}")
         if data.get("code") != 200:
             raise RuntimeError(f"青龙认证失败: {data}")
-        return data["data"]["token"]
+        token = data["data"]["token"]
+        logger.info(f"青龙 token 获取成功: {token[:20]}...")
+        return token
+
+    def _ql_request(self, method, path, params=None, body=None):
+        """统一的青龙 API 请求，尝试多种认证方式"""
+        url = f"{QL_URL}{path}"
+        auth_attempts = [
+            # 方式1: Bearer token（新版本）
+            lambda: requests.request(method, url, params=params, headers={"Authorization": f"Bearer {self.token}"}, json=body, timeout=15),
+            # 方式2: query param token（旧版本）
+            lambda: requests.request(method, url, params=dict(params or {}, token=self.token), json=body, timeout=15),
+        ]
+        for i, fn in enumerate(auth_attempts):
+            r = fn()
+            data = r.json()
+            if data.get("code") == 200:
+                if i > 0:
+                    logger.info(f"青龙 API 认证方式 {i+1} 成功")
+                return data
+            logger.warning(f"青龙 API 认证方式 {i+1} 失败: code={data.get('code')}, msg={data.get('message', '')}")
+        return data
 
     def list_envs(self, search_value=""):
-        params = {}
-        if search_value:
-            params["searchValue"] = search_value
-        # 尝试 Bearer token 认证
-        r = requests.get(f"{QL_URL}/open/envs", params=params, headers={"Authorization": f"Bearer {self.token}"}, timeout=15)
-        data = r.json()
+        params = {"searchValue": search_value} if search_value else None
+        data = self._ql_request("GET", "/open/envs", params=params)
         if data.get("code") != 200:
-            # 回退到 query param 方式
-            params["token"] = self.token
-            r = requests.get(f"{QL_URL}/open/envs", params=params, timeout=15)
-            data = r.json()
-            if data.get("code") != 200:
-                raise RuntimeError(f"获取环境变量失败: {data}")
+            raise RuntimeError(f"获取环境变量失败: {data}")
         return data.get("data", [])
 
     def create_env(self, name, value, remarks=""):
         body = {"name": name, "value": value, "remarks": remarks}
-        r = requests.post(f"{QL_URL}/open/envs", headers={"Authorization": f"Bearer {self.token}"}, json=body, timeout=15)
-        data = r.json()
+        data = self._ql_request("POST", "/open/envs", body=body)
         if data.get("code") != 200:
             raise RuntimeError(f"创建环境变量失败: {data}")
         return data["data"]
 
     def update_env(self, env_id, name, value, remarks=""):
         body = {"id": env_id, "name": name, "value": value, "remarks": remarks}
-        r = requests.put(f"{QL_URL}/open/envs", headers={"Authorization": f"Bearer {self.token}"}, json=body, timeout=15)
-        data = r.json()
+        data = self._ql_request("PUT", "/open/envs", body=body)
         if data.get("code") != 200:
             raise RuntimeError(f"更新环境变量失败: {data}")
         return data["data"]
