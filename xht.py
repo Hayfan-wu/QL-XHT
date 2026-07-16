@@ -137,16 +137,31 @@ def get_tokens_from_qinglong() -> list:
             logger.warning("青龙认证未返回 token")
             return []
 
-        # 2. 获取环境变量
+        # 2. 获取环境变量（尝试多种认证方式）
         env_url = f"{QL_URL}/open/envs"
-        env_resp = requests.get(env_url, params={
-            "token": ql_token,
-            "searchValue": "XHT_TOKEN",
-        }, timeout=10)
-        if env_resp.status_code != 200:
-            logger.warning(f"获取青龙环境变量失败: HTTP {env_resp.status_code}")
+        env_data = None
+        auth_methods = [
+            # 方式1: Bearer token
+            lambda: requests.get(env_url, headers={"Authorization": f"Bearer {ql_token}"}, params={"searchValue": "XHT_TOKEN"}, timeout=10),
+            # 方式2: query param token
+            lambda: requests.get(env_url, params={"token": ql_token, "searchValue": "XHT_TOKEN"}, timeout=10),
+        ]
+        for i, fn in enumerate(auth_methods):
+            env_resp = fn()
+            if env_resp.status_code == 200:
+                env_data = env_resp.json()
+                if env_data.get("code") == 200:
+                    if i > 0:
+                        logger.info(f"青龙 API 认证方式 {i+1} 成功")
+                    break
+                logger.warning(f"青龙 API 认证方式 {i+1} 失败: code={env_data.get('code')}, msg={env_data.get('message', '')}")
+            else:
+                logger.warning(f"青龙 API 认证方式 {i+1} HTTP {env_resp.status_code}")
+
+        if not env_data or env_data.get("code") != 200:
+            logger.warning("所有青龙 API 认证方式均失败")
             return []
-        env_data = env_resp.json()
+
         envs = env_data.get("data", [])
         for env_item in envs:
             if env_item.get("name") == "XHT_TOKEN":
@@ -158,6 +173,25 @@ def get_tokens_from_qinglong() -> list:
         return []
     except Exception as e:
         logger.warning(f"从青龙面板读取 Token 失败: {e}")
+        return []
+
+
+def get_tokens_from_local() -> list:
+    """从本地 .tokens 文件读取（兜底方案）"""
+    import os
+    local_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".tokens")
+    try:
+        if not os.path.exists(local_file):
+            return []
+        with open(local_file, "r", encoding="utf-8") as f:
+            raw = f.read().strip()
+            if not raw:
+                return []
+            tokens = [t.strip() for t in raw.split("&") if t.strip()]
+            logger.info(f"从本地文件读取到 {len(tokens)} 个 Token（兜底）")
+            return tokens
+    except Exception as e:
+        logger.warning(f"从本地文件读取 Token 失败: {e}")
         return []
 
 
@@ -440,15 +474,17 @@ class XHTClient:
 # 主函数
 # ============================================================
 def main():
-    # 优先使用 .env 中的 XHT_TOKEN，其次从青龙面板读取
+    # 优先使用 .env 中的 XHT_TOKEN，其次从青龙面板，最后从本地文件读取
     tokens = XHT_TOKENS
     if not tokens:
         tokens = get_tokens_from_qinglong()
+    if not tokens:
+        tokens = get_tokens_from_local()
 
     if not tokens:
         logger.warning(
             "没有有效的 Token！\n"
-            "请通过 QQ 机器人交互登录后，Token 会自动写入青龙面板。\n"
+            "请通过 QQ 机器人交互登录后，Token 会自动写入本地文件。\n"
             "也可手动在青龙面板环境变量中添加 XHT_TOKEN。"
         )
         sys.exit(0)

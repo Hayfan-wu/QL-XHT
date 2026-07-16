@@ -112,15 +112,21 @@ class QingLongEnv:
             # 方式2: query param token（旧版本）
             lambda: requests.request(method, url, params=dict(params or {}, token=self.token), json=body, timeout=15),
         ]
+        last_data = None
         for i, fn in enumerate(auth_attempts):
             r = fn()
-            data = r.json()
+            try:
+                data = r.json()
+            except Exception:
+                logger.warning(f"青龙 API 认证方式 {i+1} 返回非JSON: {r.text[:200]}")
+                continue
+            logger.info(f"青龙 API 认证方式 {i+1} 原始响应: code={data.get('code')}, status={r.status_code}, keys={list(data.keys())}")
             if data.get("code") == 200:
                 if i > 0:
                     logger.info(f"青龙 API 认证方式 {i+1} 成功")
                 return data
-            logger.warning(f"青龙 API 认证方式 {i+1} 失败: code={data.get('code')}, msg={data.get('message', '')}")
-        return data
+            last_data = data
+        return last_data or {"code": -1, "message": "所有认证方式均失败"}
 
     def list_envs(self, search_value=""):
         params = {"searchValue": search_value} if search_value else None
@@ -621,10 +627,43 @@ class XHTLoginFlow:
         except Exception as e:
             logger.warning(f"青龙环境未配置: {e}")
 
+    LOCAL_TOKEN_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".tokens")
+
     def save_token(self, token, remarks=""):
-        if not self.qinglong:
-            return False, "青龙未配置，无法保存 Token"
-        return self.qinglong.append_token(token, remarks=remarks)
+        # 1. 尝试保存到青龙面板
+        ql_msg = ""
+        if self.qinglong:
+            try:
+                ql_ok, ql_msg = self.qinglong.append_token(token, remarks=remarks)
+            except Exception as e:
+                ql_msg = f"青龙异常: {e}"
+
+        # 2. 同时保存到本地文件（兜底）
+        local_msg = self._save_token_local(token, remarks)
+
+        # 3. 综合结果
+        if ql_msg and "已保存" in ql_msg:
+            return True, f"{ql_msg}（本地也已备份）"
+        if local_msg:
+            return True, f"已保存到本地文件（{local_msg}）"
+        return False, ql_msg or "保存失败"
+
+    def _save_token_local(self, token, remarks=""):
+        """保存 Token 到本地文件，格式与 QL 一致（& 分隔）"""
+        try:
+            tokens = []
+            if os.path.exists(self.LOCAL_TOKEN_FILE):
+                with open(self.LOCAL_TOKEN_FILE, "r", encoding="utf-8") as f:
+                    tokens = [t.strip() for t in f.read().split("&") if t.strip()]
+            if token in tokens:
+                return "Token 已存在"
+            tokens.append(token)
+            with open(self.LOCAL_TOKEN_FILE, "w", encoding="utf-8") as f:
+                f.write("&".join(tokens))
+            return f"当前共 {len(tokens)} 个账号"
+        except Exception as e:
+            logger.warning(f"本地保存 Token 失败: {e}")
+            return ""
 
     def login_by_token(self, token):
         ok, info = self.api.query_user(token)
