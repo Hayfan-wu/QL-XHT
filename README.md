@@ -5,10 +5,11 @@
 ## 功能
 
 - 每日签到（自动获取积分）
-- 积分信息查询（连续签到天数、总积分、今日积分、任务进度）
-- 模拟浏览文章
+- 积分信息查询（连续签到天数、总积分、今日积分）
 - 多账号支持（通过环境变量 `XHT_TOKEN` 读取，`&` 分隔）
 - 多渠道推送通知（青龙内置、PushPlus、Server酱、Bark、Telegram）
+
+> 注意：阅读文章和观看视频任务无法通过 HTTP API 完成，这些任务需要原生 APP 内操作。
 
 ## 快速部署
 
@@ -73,8 +74,6 @@ requests
 | `XHT_SITE_ID` | `310104` | 站点 ID |
 | `XHT_TIMEOUT` | `15` | 请求超时（秒） |
 | `XHT_RETRY_COUNT` | `3` | 失败重试次数 |
-| `XHT_BROWSE_ARTICLE` | `true` | 是否浏览文章 |
-| `XHT_BROWSE_COUNT` | `5` | 浏览文章数量 |
 | `XHT_NOTIFY` | 青龙内置 | 通知渠道：pushplus / serverchan / bark / telegram |
 | `XHT_PUSHPLUS_TOKEN` | - | PushPlus Token |
 | `XHT_SERVERCHAN_KEY` | - | Server酱 SendKey |
