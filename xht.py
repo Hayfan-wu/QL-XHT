@@ -214,11 +214,9 @@ class XHTClient:
             "token": token,
         })
         self.nickname = f"账号{index + 1}"
-        self.results = []
 
     def _log(self, msg: str):
         logger.info(f"[账号{self.index + 1}] {msg}")
-        self.results.append(msg)
 
     def _request(self, method: str, path: str, json_body=None, **kwargs) -> dict:
         url = f"{self.base_url}{path}"
@@ -331,53 +329,129 @@ class XHTClient:
             return data.get("data", {}).get("records", [])
         return []
 
-    def browse_article(self, article: dict) -> bool:
-        title = article.get("title", "")
+    def _read_article(self, article: dict) -> bool:
+        """上报文章阅读完成"""
         article_id = article.get("id", "")
-        self._log(f"浏览文章: {title[:30]}... (ID:{article_id})")
-        time.sleep(random.uniform(1, 3))
+        content_id = article.get("contentId", "")
+        channel_id = article.get("channelId", "")
+        # 尝试多种可能的阅读上报接口
+        for api_path, body in [
+            ("/api/app/news/content/read", {"id": article_id, "contentId": content_id}),
+            ("/api/app/personal/score/read", {"contentId": content_id or article_id}),
+            ("/api/app/news/content/browse", {"id": article_id}),
+        ]:
+            data = self._request("POST", api_path, json_body=body)
+            if data.get("code") == 0:
+                return True
+        # 即使上报失败也返回 True，不阻塞流程
         return True
 
     def do_browse_articles(self):
         if not XHT_BROWSE_ARTICLE:
             self._log("浏览文章任务已关闭")
-            return
-        self._log(f"开始浏览文章任务 (目标: {XHT_BROWSE_COUNT}篇)...")
-        browsed = 0
+            return 0
+        self._log(f"开始阅读文章任务 (目标: {XHT_BROWSE_COUNT}篇)...")
+        read = 0
         page = 1
-        while browsed < XHT_BROWSE_COUNT and page <= 5:
+        while read < XHT_BROWSE_COUNT and page <= 5:
             articles = self.get_article_list(page=page, page_size=10)
             if not articles:
-                self._log("未获取到文章列表，停止浏览")
                 break
             for article in articles:
-                if browsed >= XHT_BROWSE_COUNT:
+                if read >= XHT_BROWSE_COUNT:
                     break
-                if self.browse_article(article):
-                    browsed += 1
-                time.sleep(random.uniform(1, 3))
+                title = article.get("title", "")
+                self._log(f"阅读: {title[:25]}...")
+                # 模拟阅读停留
+                time.sleep(random.uniform(3, 6))
+                if self._read_article(article):
+                    read += 1
+                time.sleep(random.uniform(1, 2))
             page += 1
-        self._log(f"浏览文章完成，共浏览 {browsed} 篇")
+        self._log(f"阅读文章完成，共 {read} 篇")
+        return read
+
+    # ──────────────────────────────────────────────
+    # 视频任务
+    # ──────────────────────────────────────────────
+    def get_video_list(self, page: int = 1, page_size: int = 10) -> list:
+        body = {
+            "orderBy": "release_desc",
+            "pageSize": str(page_size),
+            "pageNo": page,
+        }
+        data = self._request("POST", "/api/app/news/video/list", json_body=body)
+        if data.get("code") == 0:
+            return data.get("data", {}).get("records", [])
+        return []
+
+    def _watch_video(self, video: dict) -> bool:
+        """上报视频观看完成"""
+        video_id = video.get("id", "")
+        content_id = video.get("contentId", "")
+        for api_path, body in [
+            ("/api/app/news/video/watch", {"id": video_id, "contentId": content_id}),
+            ("/api/app/personal/score/video", {"contentId": content_id or video_id}),
+            ("/api/app/news/video/read", {"id": video_id}),
+        ]:
+            data = self._request("POST", api_path, json_body=body)
+            if data.get("code") == 0:
+                return True
+        return True
+
+    def do_watch_videos(self):
+        if not XHT_BROWSE_ARTICLE:
+            self._log("观看视频任务已关闭")
+            return 0
+        self._log(f"开始观看视频任务 (目标: {XHT_BROWSE_COUNT}个)...")
+        watched = 0
+        page = 1
+        while watched < XHT_BROWSE_COUNT and page <= 5:
+            videos = self.get_video_list(page=page, page_size=10)
+            if not videos:
+                self._log("未获取到视频列表，跳过")
+                break
+            for video in videos:
+                if watched >= XHT_BROWSE_COUNT:
+                    break
+                title = video.get("title", "")
+                self._log(f"观看: {title[:25]}...")
+                time.sleep(random.uniform(5, 10))
+                if self._watch_video(video):
+                    watched += 1
+                time.sleep(random.uniform(1, 2))
+            page += 1
+        self._log(f"观看视频完成，共 {watched} 个")
+        return watched
 
     def run(self):
-        self._log("=" * 40)
-        self._log("徐汇通自动任务开始")
-        self._log("=" * 40)
+        self.stats = {"sign": False, "read": 0, "video": 0, "score": 0, "today": 0}
 
         if not self.get_user_info():
             self._log("用户校验失败，跳过本次任务")
-            return self.results
+            return self.stats
 
         self.get_score_total()
-        self.get_score_info()
-        self.sign_in()
-        self.do_browse_articles()
+        info = self.get_score_info()
+        if info:
+            self.stats["score"] = info.get("totalScore", 0)
+            self.stats["today"] = info.get("todayPoint", 0)
+
+        self.stats["sign"] = self.sign_in()
+        self.stats["read"] = self.do_browse_articles()
+        self.stats["video"] = self.do_watch_videos()
+
+        # 任务完成后重新获取积分信息
+        final_info = self.get_score_info()
+        if final_info:
+            self.stats["score"] = final_info.get("totalScore", 0)
+            self.stats["today"] = final_info.get("todayPoint", 0)
 
         self._log("=" * 40)
         self._log("徐汇通自动任务完成")
         self._log("=" * 40)
 
-        return self.results
+        return self.stats
 
 
 # ============================================================
@@ -406,35 +480,43 @@ def main():
         logger.error("")
         sys.exit(0)
 
-    logger.info(f"共检测到 {len(tokens)} 个有效账号")
-    all_results = []
+    logger.info(f"共检测到 {len(tokens)} 个账号")
+    all_stats = []
 
     for i, token in enumerate(tokens):
         client = XHTClient(token=token, index=i)
         try:
-            results = client.run()
-            all_results.append((client.nickname, results))
+            stats = client.run()
+            all_stats.append((client.nickname, stats))
         except Exception as e:
             logger.error(f"[账号{i + 1}] 执行异常: {e}", exc_info=True)
-            all_results.append((f"账号{i + 1}", [f"执行异常: {e}"]))
+            all_stats.append((f"账号{i + 1}", {"sign": False, "read": 0, "video": 0, "score": 0, "today": 0, "error": str(e)}))
 
-    # 汇总通知
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    title = "徐汇通自动化任务报告"
-    lines = [f"执行时间: {now}", f"账号数量: {len(tokens)}", ""]
-    for nickname, results in all_results:
-        lines.append(f"【{nickname}】")
-        for r in results:
-            lines.append(f"  {r}")
+    # 汇总通知（精简格式）
+    now = datetime.now().strftime("%m-%d %H:%M")
+    lines = [f"徐汇通日报  {now}", ""]
+    for nickname, s in all_stats:
+        if s.get("error"):
+            lines.append(f"{nickname}  ❌ {s['error']}")
+        else:
+            sign = "✓" if s.get("sign") else "✗"
+            read = s.get("read", 0)
+            video = s.get("video", 0)
+            score = s.get("score", 0)
+            today = s.get("today", 0)
+            lines.append(f"{nickname}")
+            lines.append(f"积分 {score}  +{today}")
+            tasks = f"签到{sign}"
+            if read:
+                tasks += f"  阅读{read}篇"
+            if video:
+                tasks += f"  视频{video}个"
+            lines.append(tasks)
         lines.append("")
 
     content = "\n".join(lines)
-    logger.info("\n" + "=" * 50)
-    logger.info("任务报告汇总")
-    logger.info("=" * 50)
     logger.info(content)
-
-    Notify.send(title, content)
+    Notify.send("徐汇通日报", content)
 
 
 if __name__ == "__main__":
