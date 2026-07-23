@@ -66,23 +66,6 @@ requests
 |------|------|------|
 | `XHT_TOKEN` | 是 | JWT Token，多账号用 `&` 分隔，如 `token1&token2&token3` |
 
-### 青龙面板环境变量（可选）
-
-| 名称 | 默认值 | 说明 |
-|------|--------|------|
-| `XHT_BASE_URL` | `https://app.xuhuimedia.cn/media-basic-port` | 徐汇通 API 地址 |
-| `XHT_SITE_ID` | `310104` | 站点 ID |
-| `XHT_TIMEOUT` | `15` | 请求超时（秒） |
-| `XHT_RETRY_COUNT` | `3` | 失败重试次数 |
-| `XHT_NOTIFY` | 青龙内置 | 通知渠道：pushplus / serverchan / bark / telegram |
-| `XHT_PUSHPLUS_TOKEN` | - | PushPlus Token |
-| `XHT_SERVERCHAN_KEY` | - | Server酱 SendKey |
-| `XHT_BARK_URL` | - | Bark 推送 URL |
-| `XHT_TG_BOT_TOKEN` | - | Telegram Bot Token |
-| `XHT_TG_CHAT_ID` | - | Telegram Chat ID |
-| `XHT_TG_API_PROXY` | - | Telegram API 代理 |
-| `XHT_DEVICE_ID` | 自动生成 | 32位设备标识 |
-
 ## 目录结构
 
 ```
@@ -100,28 +83,12 @@ QL-XHT/
 
 ### API 端点
 
-通过 2026-07-16 徐汇通 APP v2.5.2 (iOS) 真实抓包分析，找到了阅读和视频任务的积分 API：
-
 | 任务 | API 端点 | 方法 | 说明 |
 |------|---------|------|------|
 | 阅读文章 | `/api/app/points/read/add` | POST | 每次调用 +1 阅读进度，最多 20 次 |
 | 观看视频 | `/api/app/points/video/add` | POST | 每次调用 +1 视频进度，最多 20 次 |
 | 登录积分 | `/api/app/points/login/add` | POST | 每日首次登录获取积分 |
 
-请求体均为空 JSON `{}`，响应 `{"code": 0, "msg": "success"}`。
-
-脚本会自动检查当前进度，仅补齐未完成的部分，避免重复调用。
-
-### 历史分析过程
-
-| 分析方向 | 方法 | 结果 |
-|---------|------|------|
-| API 路径探测 | 测试 200+ 个可能路径 | 全部返回 404 |
-| Gateway 域名 | `xuhui-gateway.shmedia.tech` | SSL 错误，不可访问 |
-| H5 页面 JS 分析 | `bridge-1.0.js`, `rmt-2.0.0.js` | 无阅读追踪代码 |
-| 浏览器模拟 | 集成浏览器加载文章页面 | 无追踪 API 调用 |
-| APK 逆向 | 下载并解包 APK | 360加固保护，无法解密 |
-| **手机抓包** | **HttpCanary 抓包 HAR 分析** | **✅ 找到 points/read/add 和 points/video/add** |
 
 ## 接口来源
 
